@@ -5,3 +5,4 @@ schedule
 setuptools
 requests
 dagster-duckdb-pandas
+streamlit
