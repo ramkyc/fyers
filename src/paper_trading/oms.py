@@ -121,5 +121,3 @@ class OrderManager:
             print(f"{timestamp} | SIMULATED Order: {action} {quantity} {symbol} @ {price:.2f}")
             self.portfolio.execute_order(symbol, action, quantity, price, timestamp)
             self._log_trade(timestamp, symbol, action, quantity, price, is_live=False)
- timestamp)
-            self._log_trade(timestamp, symbol, action, quantity, price, is_live=False)
