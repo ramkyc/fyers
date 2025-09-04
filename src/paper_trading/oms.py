@@ -39,7 +39,9 @@ class OrderManager:
             """)
 
     def _log_trade(self, timestamp, symbol, action, quantity, price, is_live):
-        """Logs a single trade to the database."""
+        """Logs a single trade to the database if logging is enabled."""
+        if not self.enable_logging:
+            return
         try:
             with duckdb.connect(database=config.TRADING_DB_FILE, read_only=False) as con:
                 con.execute(
@@ -118,4 +120,6 @@ class OrderManager:
             # --- Simulated Order Execution (for backtesting) ---
             print(f"{timestamp} | SIMULATED Order: {action} {quantity} {symbol} @ {price:.2f}")
             self.portfolio.execute_order(symbol, action, quantity, price, timestamp)
+            self._log_trade(timestamp, symbol, action, quantity, price, is_live=False)
+ timestamp)
             self._log_trade(timestamp, symbol, action, quantity, price, is_live=False)
