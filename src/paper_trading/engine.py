@@ -36,19 +36,18 @@ class LiveTradingEngine:
 
         # Setup SQLite connection for storing live ticks into the MARKET database
         self.market_con = sqlite3.connect(database=config.LIVE_MARKET_DB_FILE)
+        # Use a dedicated table for live ticks with a simple schema
         self.market_con.execute("""
-            CREATE TABLE IF NOT EXISTS historical_data (
+            CREATE TABLE IF NOT EXISTS live_ticks (
                 timestamp TIMESTAMP,
                 symbol TEXT,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume INTEGER
+                ltp REAL,
+                volume INTEGER,
+                UNIQUE(timestamp, symbol)
             );
         """)
         self.market_con.commit()
-        print(f"SQLite connection to '{config.LIVE_MARKET_DB_FILE}' is ready for live ticks.")
+        print(f"SQLite connection to '{config.LIVE_MARKET_DB_FILE}' (table: live_ticks) is ready.")
 
         print("Live Trading Engine initialized.")
 
@@ -70,13 +69,13 @@ class LiveTradingEngine:
                     
                     # Store live tick data in SQLite
                     try:
-                        self.market_con.execute("""
-                            INSERT OR IGNORE INTO historical_data (timestamp, symbol, open, high, low, close, volume)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ", (timestamp, symbol, ltp, ltp, ltp, ltp, volume))
+                        self.market_con.execute(
+                            "INSERT OR IGNORE INTO live_ticks (timestamp, symbol, ltp, volume) VALUES (?, ?, ?, ?)",
+                            (timestamp, symbol, ltp, volume)
+                        )
                         self.market_con.commit()
                     except Exception as e:
-                        print(f"Error storing live tick for {symbol} ({timestamp}): {e}")
+                        print(f"Error storing live tick for {symbol} ({timestamp}) into live_ticks: {e}")
 
                     # Pass the live tick data to the strategy, indicating it's live trading
                     self.strategy.on_data(timestamp, {symbol: {'close': ltp}}, is_live_trading=True) # Using 'close' for consistency with backtest data structure

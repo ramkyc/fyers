@@ -87,6 +87,8 @@ class SMACrossoverStrategy(BaseStrategy):
         # Calculate SMAs
         short_sma = grouped.transform(lambda x: x.rolling(window=self.short_window).mean())
         long_sma = grouped.transform(lambda x: x.rolling(window=self.long_window).mean())
+        # The .rolling() function ensures we only use past data for the calculation at each
+        # point in time, which is crucial for preventing lookahead bias.
 
         # Create a 'signal' column: 1 for bullish crossover, -1 for bearish
         # np.where is a fast, vectorized conditional assignment
@@ -97,6 +99,8 @@ class SMACrossoverStrategy(BaseStrategy):
         # .diff() calculates the difference from the previous row (within each group)
         # A change from -1 to 1 is a BUY signal (diff=2)
         # A change from 1 to -1 is a SELL signal (diff=-2)
+        # This also prevents lookahead bias as it only compares the current state to the
+        # immediately preceding state.
         signals_df['positions'] = signals_df.groupby('symbol')['signal'].diff()
 
         return signals_df
