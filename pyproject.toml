@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "fyers"
+version = "0.1.0"
+description = "Paper trading and backtesting system for Fyers"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fyers-apiv3 = "*"
+python-dotenv = "^1.0.0"
+requests = "^2.31.0"
+duckdb = "^0.10.0"
+pandas = "^2.2.0"
+python-dateutil = "^2.8.2"
+pyyaml = "^6.0.1"
+streamlit = "^1.49.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

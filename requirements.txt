@@ -1,0 +1,7 @@
+fyers-apiv3
+pandas
+python-dotenv
+schedule
+setuptools
+requests
+dagster-duckdb-pandas

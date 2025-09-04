@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environments
+.env
+venv/
+env/
+
+# Fyers Specific
+fyers_tokens.json
+fyers_token.txt
+logs/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# DuckDB
+*.duckdb
+
+# Poetry
+.poetry/
+
+# pytest
+.pytest_cache/
