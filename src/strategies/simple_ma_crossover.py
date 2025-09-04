@@ -41,6 +41,29 @@ class SMACrossoverStrategy(BaseStrategy):
         self.short_sma: 'defaultdict[str, float|None]' = defaultdict(lambda: None)
         self.long_sma: 'defaultdict[str, float|None]' = defaultdict(lambda: None)
 
+    @staticmethod
+    def get_optimizable_params() -> list[dict]:
+        """Defines the parameters that can be optimized for this strategy."""
+        return [
+            {
+                'name': 'short_window',
+                'type': 'slider',
+                'label': 'Short Window Range',
+                'min': 1, 'max': 50, 'default': (5, 15), 'step': 2
+            },
+            {
+                'name': 'long_window',
+                'type': 'slider',
+                'label': 'Long Window Range',
+                'min': 10, 'max': 200, 'default': (20, 50), 'step': 5
+            }
+        ]
+
+    @staticmethod
+    def _generate_param_combinations(opt_params: dict) -> list[dict]:
+        short_windows = range(opt_params['short_window'][0], opt_params['short_window'][1] + 1, opt_params.get('short_window_step', 1))
+        long_windows = range(opt_params['long_window'][0], opt_params['long_window'][1] + 1, opt_params.get('long_window_step', 1))
+        return [{'short_window': sw, 'long_window': lw} for sw in short_windows for lw in long_windows if sw < lw]
 
     def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
         """

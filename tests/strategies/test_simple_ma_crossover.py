@@ -3,11 +3,13 @@
 import pytest
 import datetime
 import pandas as pd
-import sys
+import sys # Add the project root to the Python path to allow absolute imports
 import os
 from unittest.mock import MagicMock, ANY
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from src.strategies.simple_ma_crossover import SMACrossoverStrategy
 

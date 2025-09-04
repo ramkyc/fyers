@@ -33,8 +33,9 @@ TOTP_KEY = os.getenv("FYERS_TOTP_KEY")
 
 # --- Database Paths ---
 DATA_DIR = os.path.join(project_root, 'data')
-MARKET_DB_FILE = os.path.join(DATA_DIR, 'market_data.duckdb')
-TRADING_DB_FILE = os.path.join(DATA_DIR, 'trading_log.duckdb')
+HISTORICAL_MARKET_DB_FILE = os.path.join(DATA_DIR, 'historical_market_data.sqlite')
+LIVE_MARKET_DB_FILE = os.path.join(DATA_DIR, 'live_market_data.sqlite')
+TRADING_DB_FILE = os.path.join(DATA_DIR, 'trading_log.sqlite')
 
 # --- Log Path ---
 LOG_PATH = os.path.join(project_root, 'logs')

@@ -4,21 +4,6 @@ import datetime
 import config # config.py is now in the project root
 
 class Portfolio:
-    def _init_portfolio_log(self):
-        import duckdb
-        import os
-        self.con = duckdb.connect(database=config.TRADING_DB_FILE, read_only=False)
-        self.con.execute("""
-            CREATE TABLE IF NOT EXISTS portfolio_log (
-                timestamp TIMESTAMP,
-                total_portfolio_value DOUBLE,
-                cash DOUBLE,
-                holdings_value DOUBLE,
-                realized_pnl DOUBLE,
-                unrealized_pnl DOUBLE
-            );
-        """)
-
     """
     Manages the state of a paper trading account, including cash, positions, and P&L.
     This class is designed to be used by both the backtesting and live paper trading engines.
@@ -39,7 +24,8 @@ class Portfolio:
         self.enable_logging = enable_logging
         self.con = None
         if self.enable_logging:
-            self._init_portfolio_log()
+            import sqlite3
+            self.con = sqlite3.connect(database=config.TRADING_DB_FILE)
         self.tick_count = 0
 
     def log_portfolio_value(self, timestamp, current_prices):
@@ -59,8 +45,9 @@ class Portfolio:
                 INSERT INTO portfolio_log (timestamp, total_portfolio_value, cash, holdings_value, realized_pnl, unrealized_pnl)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                [timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl']]
+                (timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl'])
             )
+            self.con.commit()
 
     def execute_order(self, symbol: str, action: str, quantity: int, price: float, timestamp: datetime):
         """

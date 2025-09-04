@@ -23,6 +23,20 @@ class BaseStrategy(ABC):
         self.order_manager = order_manager
         self.params: dict[str, object] = params or {}
 
+    @staticmethod
+    def get_optimizable_params() -> list[dict]:
+        """
+        Returns a list of parameters that can be optimized, along with their
+        default ranges and types for the UI.
+
+        Returns:
+            list[dict]: A list of parameter definition dictionaries.
+                        Example: [{'name': 'short_window', 'type': 'slider', 'min': 1, 'max': 50, 'default': (5, 15), 'step': 1}]
+        """
+        # Base strategy has no optimizable parameters.
+        # Subclasses should override this.
+        return []
+
     @abstractmethod
     def on_data(self, timestamp: datetime, data: dict[str, dict[str, object]], **kwargs):
         """

@@ -1,13 +1,13 @@
 # src/backtesting/engine.py
 
-import duckdb
+import sqlite3
 import pandas as pd
 import os
 import sys
 
-from src.paper_trading.portfolio import Portfolio
-from src.paper_trading.oms import OrderManager # Import OrderManager
-from src.reporting.performance_analyzer import PerformanceAnalyzer
+from ..paper_trading.portfolio import Portfolio
+from ..paper_trading.oms import OrderManager # Import OrderManager
+from ..reporting.performance_analyzer import PerformanceAnalyzer
 import config # config.py is now in the project root
 
 class BacktestingEngine:
@@ -26,9 +26,9 @@ class BacktestingEngine:
         """
         self.start_date = start_date
         self.end_date = end_date
-        self.db_file = config.MARKET_DB_FILE
+        self.db_file = db_file
         self.resolution = resolution
-        self.con = duckdb.connect(database=self.db_file, read_only=True)
+        self.con = sqlite3.connect(database=self.db_file) #, read_only=True) # SQLite doesn't have a direct read_only parameter in connect
         print("Backtesting Engine initialized.")
 
     def _load_data(self, symbols: list) -> pd.DataFrame: # Changed return type hint
@@ -44,7 +44,7 @@ class BacktestingEngine:
             AND timestamp BETWEEN '{self.start_date}' AND '{self.end_date}'
             ORDER BY timestamp ASC;
             """
-        df = self.con.execute(query).fetchdf()
+        df = pd.read_sql_query(query, self.con, parse_dates=['timestamp'])
 
         # Set a MultiIndex for efficient grouping and vectorized operations
         df = df.set_index(['timestamp', 'symbol'])
@@ -77,9 +77,9 @@ class BacktestingEngine:
 
         # 2. Initialize the portfolio and OrderManager
         portfolio = Portfolio(initial_cash=initial_cash, enable_logging=False)
-        # The OMS is not directly used in the vectorized loop, but the portfolio is.
-        # The strategy needs an OMS instance for its base class, but won't use it.
-        oms = OrderManager(portfolio, enable_logging=False)
+        # The OMS is used to execute trades based on the generated signals.
+        # It updates the portfolio state for each simulated trade.
+        oms = OrderManager(portfolio)
 
         # 3. Initialize the strategy and generate all signals at once
         strategy = strategy_class(symbols=symbols, portfolio=portfolio, order_manager=oms, params=params)
@@ -109,7 +109,7 @@ class BacktestingEngine:
                     oms.execute_order({
                         'symbol': symbol,
                         'action': 'SELL',
-                        'quantity': current_position['quantity'],
+                        'quantity': min(strategy.trade_quantity, current_position['quantity']), # Sell the trade quantity or what's left
                         'price': price,
                         'timestamp': timestamp
                     }, is_live_trading=False)

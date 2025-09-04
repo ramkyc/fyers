@@ -24,7 +24,7 @@
 4. **Data Collector**
    - Connect to Fyers WebSocket for tick data (using official v3 client).
    - Subscribe to required symbols (stocks, ATM calls, ATM puts).
-   - Store tick data with timestamps to CSV or database.
+   - Store tick data with timestamps to database.
 
 5. **Automation & Ongoing Access**
    - Automate token refresh or manual daily login (as needed).
@@ -33,3 +33,13 @@
 6. **Testing & Documentation**
    - Test with small symbol sets before scaling.
    - Document setup, API, token refresh, and fallback workflows.
+
+## Data Architecture
+
+To ensure a clear separation between different operational modes and to prevent data conflicts, the application uses three distinct DuckDB database files located in the `/data` directory:
+
+-   **`historical_market_data.duckdb`**: Stores historical market data fetched by the `src/fetch_historical_data.py` script. This database is used exclusively by the backtesting engine.
+-   **`live_market_data.duckdb`**: Stores live market data captured in real-time by the `src/tick_collector.py` process.
+-   **`live_trading_log.duckdb`**: Stores the portfolio and trade history from the live trading engine.
+
+This separation ensures that live trading, historical fetching, and backtesting operations do not interfere with each other.

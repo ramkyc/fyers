@@ -2,11 +2,13 @@ import schedule
 import time
 import datetime
 import os
-import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import sys # Add the project root to the Python path to allow absolute imports
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from src.auth import get_access_token, get_fyers_model
-from src.fetch_symbols import get_top_nifty_stocks, get_atm_option_symbols
+from src.fetch_historical_data import get_top_nifty_stocks, get_atm_option_symbols
 from src.market_calendar import is_market_working_day
 
 # --- Paper Trading Imports ---

@@ -1,13 +1,16 @@
 import sys
+# Add the project root to the Python path to allow absolute imports
+import os
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 sys.dont_write_bytecode = True # Prevent __pycache__ creation
 
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import streamlit as st
 import pandas as pd
 import datetime
-import duckdb
+import sqlite3
 import plotly.graph_objects as go
 import plotly.express as px
 import concurrent.futures
@@ -30,8 +33,8 @@ HISTORICAL_TABLE = "historical_data"
 # --- Helper Functions ---
 @st.cache_resource
 def get_db_connection(db_file):
-    """Establishes and returns a DuckDB connection."""
-    return duckdb.connect(database=db_file, read_only=True)
+    """Establishes and returns a SQLite connection."""
+    return sqlite3.connect(f'file:{db_file}?mode=ro', uri=True)
 
 @st.cache_data(ttl=600) # Cache data for 10 minutes
 def load_historical_data(symbols, resolution, start_date, end_date):
@@ -39,21 +42,21 @@ def load_historical_data(symbols, resolution, start_date, end_date):
     Loads historical data from the database for display purposes.
     """
     # This function specifically reads from the market data DB
-    if not os.path.exists(config.MARKET_DB_FILE):
-        st.warning(f"Market data file not found at {config.MARKET_DB_FILE}")
+    if not os.path.exists(config.HISTORICAL_MARKET_DB_FILE):
+        st.warning(f"Market data file not found at {config.HISTORICAL_MARKET_DB_FILE}")
         return pd.DataFrame()
         
-    con = get_db_connection(config.MARKET_DB_FILE)
-    symbols_tuple = tuple(symbols)
-    query = f"""
-        SELECT timestamp, symbol, close
-        FROM {HISTORICAL_TABLE}
-        WHERE symbol IN {symbols_tuple}
-        AND resolution = '{resolution}'
-        AND timestamp BETWEEN '{start_date}' AND '{end_date}'
-        ORDER BY timestamp ASC;
-        """
-    df = con.execute(query).fetchdf()
+    with sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True) as con:
+        symbols_tuple = tuple(symbols)
+        query = f"""
+            SELECT timestamp, symbol, close
+            FROM {HISTORICAL_TABLE}
+            WHERE symbol IN ({','.join(['?']*len(symbols_tuple))})
+            AND resolution = '{resolution}'
+            AND timestamp BETWEEN '{start_date}' AND '{end_date}'
+            ORDER BY timestamp ASC;
+            """
+        df = pd.read_sql_query(query, con, params=symbols_tuple)
     return df
 
 @st.cache_data(ttl=60) # Cache for 1 minute
@@ -64,19 +67,24 @@ def load_log_data(query):
         # It's not an error if this file doesn't exist yet
         return pd.DataFrame()
 
-    con = get_db_connection(config.TRADING_DB_FILE)
-    df = con.execute(query).fetchdf()
-    return df
+    try:
+        con = sqlite3.connect(f'file:{config.TRADING_DB_FILE}?mode=ro', uri=True)
+        df = pd.read_sql_query(query, con)
+        return df
+    except (sqlite3.OperationalError, pd.io.sql.DatabaseError) as e:
+        # This can happen if the table doesn't exist yet (e.g., no live trades made)
+        st.info(f"Could not load log data, the table might not exist yet. Details: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=600) # Cache for 10 minutes
 def get_all_symbols():
     """Fetches all unique symbols from the historical data table."""
-    if not os.path.exists(config.MARKET_DB_FILE):
-        st.warning(f"Market data file not found at {config.MARKET_DB_FILE}. Please run `python src/fetch_symbols.py` to generate it.")
+    if not os.path.exists(config.HISTORICAL_MARKET_DB_FILE):
+        st.warning(f"Historical market data file not found at {config.HISTORICAL_MARKET_DB_FILE}. Please run `python src/fetch_historical_data.py` to generate it.")
         return []
-    con = get_db_connection(config.MARKET_DB_FILE)
+    con = get_db_connection(config.HISTORICAL_MARKET_DB_FILE)
     query = "SELECT DISTINCT symbol FROM historical_data ORDER BY symbol;"
-    df = con.execute(query).fetchdf()
+    df = pd.read_sql_query(query, con)
     return df['symbol'].tolist() if not df.empty else []
 
 def run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash):
@@ -244,20 +252,24 @@ def main():
     # --- Backtest Mode Selection ---
     run_optimization = st.sidebar.checkbox("Enable Parameter Optimization")
 
-    strategy_params = {}
+    strategy_params: dict[str, object] = {}
+    optimization_params: dict[str, object] = {}
+
     if run_optimization:
         st.sidebar.subheader("Optimization Ranges")
-        if selected_strategy_name == "Simple MA Crossover":
-            short_window_range = st.sidebar.slider("Short Window Range", 1, 50, (5, 15))
-            short_window_step = st.sidebar.number_input("Short Window Step", 1, 10, 2)
-            long_window_range = st.sidebar.slider("Long Window Range", 10, 200, (20, 50))
-            long_window_step = st.sidebar.number_input("Long Window Step", 1, 10, 5)
+        optimizable_params = strategy_class.get_optimizable_params()
+        for param in optimizable_params:
+            if param['type'] == 'slider':
+                optimization_params[param['name']] = st.sidebar.slider(param['label'], param['min'], param['max'], param['default'])
+                optimization_params[f"{param['name']}_step"] = st.sidebar.number_input(f"{param['name'].replace('_', ' ').title()} Step", 1, 10, param['step'])
+
         run_button_label = "Run Optimization"
     else:
         st.sidebar.subheader(f"Parameters for {selected_strategy_name}")
-        if selected_strategy_name == "Simple MA Crossover":
-            strategy_params['short_window'] = st.sidebar.slider("Short Window", min_value=1, max_value=50, value=9)
-            strategy_params['long_window'] = st.sidebar.slider("Long Window", min_value=10, max_value=200, value=21)
+        # This part can also be made dynamic if strategies define their non-optimizable params
+        # For now, keeping it simple
+        strategy_params['short_window'] = st.sidebar.slider("Short Window", min_value=1, max_value=50, value=9)
+        strategy_params['long_window'] = st.sidebar.slider("Long Window", min_value=10, max_value=200, value=21)
         run_button_label = "Run Backtest"
 
     st.sidebar.subheader("Common Parameters")
@@ -280,17 +292,13 @@ def main():
 
                 if run_optimization:
                     param_combinations = []
-                    if selected_strategy_name == "Simple MA Crossover":
-                        short_windows = range(short_window_range[0], short_window_range[1] + 1, short_window_step)
-                        long_windows = range(long_window_range[0], long_window_range[1] + 1, long_window_step)
-                        param_combinations = [{'short_window': sw, 'long_window': lw} for sw in short_windows for lw in long_windows if sw < lw]
-
+                    param_combinations = strategy_class._generate_param_combinations(optimization_params)
                     if not param_combinations:
                         st.warning("No valid parameter combinations found. Ensure short window is smaller than long window.")
                     else:
                         for p in param_combinations:
                             p['trade_quantity'] = trade_quantity
-                        worker_args = [(start_date_str, end_date_str, MARKET_DB_FILE, resolution, symbols_to_test, params, initial_cash, selected_strategy_name) for params in param_combinations]
+                        worker_args = [(start_date_str, end_date_str, config.HISTORICAL_MARKET_DB_FILE, resolution, symbols_to_test, params, initial_cash, selected_strategy_name) for params in param_combinations]
                         results = [] # This was already here, but for clarity in the diff
                         progress_text = st.empty()
                         progress_bar = st.progress(0)
@@ -311,7 +319,7 @@ def main():
 
                 else: # Run a single backtest
                     strategy_params['trade_quantity'] = trade_quantity
-                    engine = BacktestingEngine(start_date=start_date_str, end_date=end_date_str, db_file=config.MARKET_DB_FILE, resolution=resolution)
+                    engine = BacktestingEngine(start_date=start_date_str, end_date=end_date_str, db_file=config.HISTORICAL_MARKET_DB_FILE, resolution=resolution)
                     
                     portfolio_result, last_prices, backtest_log = run_and_capture_backtest(
                         engine, strategy_class, symbols_to_test, strategy_params, initial_cash

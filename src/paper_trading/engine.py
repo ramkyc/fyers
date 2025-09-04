@@ -5,7 +5,7 @@ from fyers_apiv3.FyersWebsocket import data_ws
 import json
 import os
 import datetime
-import duckdb
+import sqlite3
 import config # config.py is now in the project root
 
 class LiveTradingEngine:
@@ -34,20 +34,21 @@ class LiveTradingEngine:
         self.last_known_prices = {} # To store the last price of each symbol
         self.ws = None # WebSocket instance
 
-        # Setup DuckDB connection for storing live ticks into the MARKET database
-        self.market_con = duckdb.connect(database=config.MARKET_DB_FILE, read_only=False)
+        # Setup SQLite connection for storing live ticks into the MARKET database
+        self.market_con = sqlite3.connect(database=config.LIVE_MARKET_DB_FILE)
         self.market_con.execute("""
             CREATE TABLE IF NOT EXISTS historical_data (
                 timestamp TIMESTAMP,
-                symbol VARCHAR,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume BIGINT
+                symbol TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER
             );
         """)
-        print(f"DuckDB connection to '{config.MARKET_DB_FILE}' is ready for live ticks.")
+        self.market_con.commit()
+        print(f"SQLite connection to '{config.LIVE_MARKET_DB_FILE}' is ready for live ticks.")
 
         print("Live Trading Engine initialized.")
 
@@ -67,13 +68,13 @@ class LiveTradingEngine:
                 if symbol and ltp is not None:
                     self.last_known_prices[symbol] = ltp
                     
-                    # Store live tick data in DuckDB
+                    # Store live tick data in SQLite
                     try:
                         self.market_con.execute("""
-                            INSERT INTO historical_data (timestamp, symbol, open, high, low, close, volume)
+                            INSERT OR IGNORE INTO historical_data (timestamp, symbol, open, high, low, close, volume)
                             VALUES (?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT DO NOTHING;
-                        """, [timestamp, symbol, ltp, ltp, ltp, ltp, volume])
+                        ", (timestamp, symbol, ltp, ltp, ltp, ltp, volume))
+                        self.market_con.commit()
                     except Exception as e:
                         print(f"Error storing live tick for {symbol} ({timestamp}): {e}")
 
@@ -119,8 +120,9 @@ class LiveTradingEngine:
 
     def __del__(self):
         """
-        Ensures the DuckDB connection is closed when the object is destroyed.
+        Ensures the SQLite connection is closed when the object is destroyed.
         """
         if self.market_con:
+            self.market_con.commit() # Commit any pending changes
             self.market_con.close()
             print("Market DB connection closed in LiveTradingEngine.")

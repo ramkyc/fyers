@@ -3,7 +3,7 @@
 from .portfolio import Portfolio
 from fyers_apiv3 import fyersModel
 import datetime
-import duckdb
+import sqlite3
 import os
 import config # config.py is now in the project root
 
@@ -26,7 +26,7 @@ class OrderManager:
 
     def _init_trade_log(self):
         """Initializes the paper_trades table in the database."""
-        with duckdb.connect(database=config.TRADING_DB_FILE, read_only=False) as con:
+        with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
             con.execute("""
                 CREATE TABLE IF NOT EXISTS paper_trades (
                     timestamp TIMESTAMP,
@@ -40,19 +40,18 @@ class OrderManager:
 
     def _log_trade(self, timestamp, symbol, action, quantity, price, is_live):
         """Logs a single trade to the database if logging is enabled."""
-        if not self.enable_logging:
-            return
         try:
-            with duckdb.connect(database=config.TRADING_DB_FILE, read_only=False) as con:
+            with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                 con.execute(
                     """
                     INSERT INTO paper_trades (timestamp, symbol, action, quantity, price, is_live)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    [timestamp, symbol, action, quantity, price, is_live]
+                    (timestamp, symbol, action, quantity, price, is_live)
                 )
+                con.commit()
         except Exception as e:
-            print(f"Error logging trade to DuckDB: {e}")
+            print(f"Error logging trade to SQLite: {e}")
 
     def get_position(self, symbol: str):
         """
