@@ -76,7 +76,7 @@ class BacktestingEngine:
             return None, None
 
         # 2. Initialize the portfolio and OrderManager
-        portfolio = Portfolio(initial_cash=initial_cash)
+        portfolio = Portfolio(initial_cash=initial_cash, enable_logging=False)
         # The OMS is not directly used in the vectorized loop, but the portfolio is.
         # The strategy needs an OMS instance for its base class, but won't use it.
         oms = OrderManager(portfolio)

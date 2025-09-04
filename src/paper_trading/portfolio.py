@@ -23,35 +23,44 @@ class Portfolio:
     Manages the state of a paper trading account, including cash, positions, and P&L.
     This class is designed to be used by both the backtesting and live paper trading engines.
     """
-    def __init__(self, initial_cash=100000.0):
+    def __init__(self, initial_cash=100000.0, enable_logging=True):
         """
         Initializes the portfolio.
 
         Args:
             initial_cash (float): The starting cash balance.
+            enable_logging (bool): Whether to log portfolio performance to the database.
         """
         self.initial_cash = initial_cash
         self.current_cash = initial_cash
         self.positions = {}  # Key: symbol, Value: {'quantity': int, 'avg_price': float}
         self.trades = [] # To log all trades
         self.equity_curve = [] # To log portfolio value over time for analysis
-        self._init_portfolio_log()
+        self.enable_logging = enable_logging
+        self.con = None
+        if self.enable_logging:
+            self._init_portfolio_log()
         self.tick_count = 0
+
     def log_portfolio_value(self, timestamp, current_prices):
         summary = self.get_performance_summary(current_prices)
-        self.con.execute(
-            """
-            INSERT INTO portfolio_log (timestamp, total_portfolio_value, cash, holdings_value, realized_pnl, unrealized_pnl)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl']]
-        )
-        # Also append to the in-memory list for backtest analysis
+        
+        # Always append to the in-memory list for backtest analysis
         self.equity_curve.append(
             {'timestamp': timestamp, 
              'value': summary['total_portfolio_value']
             }
         )
+
+        # Only log to database if enabled
+        if self.enable_logging and self.con:
+            self.con.execute(
+                """
+                INSERT INTO portfolio_log (timestamp, total_portfolio_value, cash, holdings_value, realized_pnl, unrealized_pnl)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl']]
+            )
 
     def execute_order(self, symbol: str, action: str, quantity: int, price: float, timestamp: datetime):
         """
