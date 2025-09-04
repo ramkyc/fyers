@@ -73,7 +73,7 @@ def load_log_data(query):
         return df
     except (sqlite3.OperationalError, pd.io.sql.DatabaseError) as e:
         # This can happen if the table doesn't exist yet (e.g., no live trades made)
-        st.info(f"Could not load log data, the table might not exist yet. Details: {e}")
+        st.info("Could not load log data. The database table may not exist yet. Please run a live trade to generate logs.")
         return pd.DataFrame()
 
 @st.cache_data(ttl=600) # Cache for 10 minutes

@@ -35,16 +35,16 @@ class BacktestingEngine:
         """
         Loads historical data from the database and pivots it for easy access.
         """
-        symbols_tuple = tuple(symbols)
         query = f"""
             SELECT timestamp, symbol, close
             FROM historical_data
-            WHERE symbol IN {symbols_tuple}
-            AND resolution = '{self.resolution}'
-            AND timestamp BETWEEN '{self.start_date}' AND '{self.end_date}'
+            WHERE symbol IN ({','.join(['?']*len(symbols))})
+            AND resolution = ?
+            AND timestamp BETWEEN ? AND ?
             ORDER BY timestamp ASC;
             """
-        df = pd.read_sql_query(query, self.con, parse_dates=['timestamp'])
+        params = symbols + [self.resolution, self.start_date, self.end_date]
+        df = pd.read_sql_query(query, self.con, params=params, parse_dates=['timestamp'])
 
         # Set a MultiIndex for efficient grouping and vectorized operations
         df = df.set_index(['timestamp', 'symbol'])
@@ -84,6 +84,9 @@ class BacktestingEngine:
         # 3. Initialize the strategy and generate all signals at once
         strategy = strategy_class(symbols=symbols, portfolio=portfolio, order_manager=oms, params=params)
         signals = strategy.generate_signals(data)
+        # NOTE on Lookahead Bias: The generate_signals method is designed to be vectorized
+        # but free of lookahead bias. It uses pandas functions like .rolling() and .diff()
+        # which only use past data to calculate indicators for any given point in time.
 
         # 4. Filter for actual trade signals to iterate over a much smaller dataset
         trades = signals[signals['positions'].isin([1.0, -1.0, 2.0, -2.0])].copy()

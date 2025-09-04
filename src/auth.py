@@ -113,13 +113,11 @@ def generate_and_save_tokens_manually(redirected_url=None):
     try:
         # Extract auth_code from the URL
         auth_code = redirected_url.split('auth_code=')[1].split('&')[0]
-        print(f"DEBUG: Captured auth_code (first 10 chars): {auth_code[:10]}...")
     except IndexError:
         raise Exception("Could not find 'auth_code' in the provided URL. Please make sure you paste the full URL.")
 
     session.set_token(auth_code)
     response = session.generate_token()
-    print(f"DEBUG: Response from generate_token: {response}")
 
     if "access_token" in response:
         save_tokens(response["access_token"], response["refresh_token"])
