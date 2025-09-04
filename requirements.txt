@@ -6,3 +6,4 @@ setuptools
 requests
 dagster-duckdb-pandas
 streamlit
+plotly
