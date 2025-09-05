@@ -4,7 +4,7 @@ from collections import defaultdict
 import pandas as pd
 from src.paper_trading.oms import OrderManager
 from src.paper_trading.portfolio import Portfolio
-from .base_strategy import BaseStrategy
+from src.strategies.base_strategy import BaseStrategy
 import numpy as np
 
 class SMACrossoverStrategy(BaseStrategy):
@@ -65,46 +65,6 @@ class SMACrossoverStrategy(BaseStrategy):
         long_windows = range(opt_params['long_window'][0], opt_params['long_window'][1] + 1, opt_params.get('long_window_step', 1))
         return [{'short_window': sw, 'long_window': lw} for sw in short_windows for lw in long_windows if sw < lw]
 
-    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Generates trading signals for all symbols based on historical data.
-        This is a vectorized operation.
-
-        Args:
-            data (pd.DataFrame): A DataFrame with a MultiIndex (timestamp, symbol)
-                                 and a 'close' column.
-
-        Returns:
-            pd.DataFrame: The input DataFrame with an added 'signal' column.
-                          (1 for Buy, -1 for Sell, 0 for Hold).
-        """
-        signals_df = data.copy()
-        signals_df['signal'] = 0
-
-        # Group by symbol to calculate indicators for each symbol independently
-        grouped = signals_df.groupby('symbol')['close']
-        
-        # Calculate SMAs
-        short_sma = grouped.transform(lambda x: x.rolling(window=self.short_window).mean())
-        long_sma = grouped.transform(lambda x: x.rolling(window=self.long_window).mean())
-        # The .rolling() function ensures we only use past data for the calculation at each
-        # point in time, which is crucial for preventing lookahead bias.
-
-        # Create a 'signal' column: 1 for bullish crossover, -1 for bearish
-        # np.where is a fast, vectorized conditional assignment
-        signals_df['signal'] = np.where(short_sma > long_sma, 1, 0)
-        signals_df['signal'] = np.where(short_sma < long_sma, -1, signals_df['signal'])
-
-        # Generate trading orders based on the change in signal
-        # .diff() calculates the difference from the previous row (within each group)
-        # A change from -1 to 1 is a BUY signal (diff=2)
-        # A change from 1 to -1 is a SELL signal (diff=-2)
-        # This also prevents lookahead bias as it only compares the current state to the
-        # immediately preceding state.
-        signals_df['positions'] = signals_df.groupby('symbol')['signal'].diff()
-
-        return signals_df
-
     def on_data(self, timestamp, data: dict[str, dict[str, object]], **kwargs):
         """
         Processes new data (live ticks) and executes trades if a crossover occurs.
@@ -135,17 +95,19 @@ class SMACrossoverStrategy(BaseStrategy):
             prev_long_sma = self.long_sma[symbol]
 
             if prev_short_sma is not None and prev_long_sma is not None:
+                # --- Rule: Prevent Position Pyramiding ---
+                # Check if a position already exists for this symbol before entering a new one.
                 position = self.portfolio.get_position(symbol)
 
                 # Bullish Crossover
                 if short_sma > long_sma and prev_short_sma <= prev_long_sma and not position:
-                    print(f"LIVE SIGNAL: Bullish crossover for {symbol}. Placing BUY order.")
-                    self.order_manager.execute_order({'symbol': symbol, 'action': 'BUY', 'quantity': self.trade_quantity, 'price': ltp, 'timestamp': timestamp}, is_live_trading=is_live_trading)
+                    print(f"SIGNAL: Bullish crossover for {symbol}. Placing BUY order.")
+                    self.buy(symbol, self.trade_quantity, ltp, timestamp, is_live_trading)
 
                 # Bearish Crossover
                 elif short_sma < long_sma and prev_short_sma >= prev_long_sma and position:
-                    print(f"LIVE SIGNAL: Bearish crossover for {symbol}. Placing SELL order.")
-                    self.order_manager.execute_order({'symbol': symbol, 'action': 'SELL', 'quantity': abs(position['quantity']), 'price': ltp, 'timestamp': timestamp}, is_live_trading=is_live_trading)
+                    print(f"SIGNAL: Bearish crossover for {symbol}. Placing SELL order.")
+                    self.sell(symbol, abs(position['quantity']), ltp, timestamp, is_live_trading)
 
             self.short_sma[symbol] = short_sma
             self.long_sma[symbol] = long_sma

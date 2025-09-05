@@ -1,6 +1,6 @@
-from .portfolio import Portfolio
-from .oms import OrderManager
-from ..strategies.base_strategy import BaseStrategy
+from src.paper_trading.portfolio import Portfolio
+from src.paper_trading.oms import OrderManager
+from src.strategies.base_strategy import BaseStrategy
 from fyers_apiv3.FyersWebsocket import data_ws
 import json
 import os
@@ -85,8 +85,9 @@ class LiveTradingEngine:
         """
         self.fyers = fyers_model
         self.app_id = app_id
-        self.portfolio = Portfolio(initial_cash=initial_cash)
-        self.oms = OrderManager(self.portfolio, self.fyers) # OMS now needs fyers_model
+        self.run_id = f"live_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.portfolio = Portfolio(initial_cash=initial_cash, run_id=self.run_id)
+        self.oms = OrderManager(self.portfolio, run_id=self.run_id, fyers=self.fyers)
         self.strategy = strategy
 
         # --- Critical Linkage ---
@@ -170,10 +171,10 @@ class LiveTradingEngine:
                         with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                             con.execute(
                                 """
-                                INSERT INTO portfolio_log (timestamp, total_portfolio_value, cash, holdings_value, realized_pnl, unrealized_pnl)
-                                VALUES (?, ?, ?, ?, ?, ?)
+                                INSERT INTO portfolio_log (run_id, timestamp, total_portfolio_value, cash, holdings_value, realized_pnl, unrealized_pnl)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
                                 """,
-                                (timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl'])
+                                (self.run_id, timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl'])
                             )
                             con.commit()
 

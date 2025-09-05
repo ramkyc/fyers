@@ -130,6 +130,29 @@ The main user interface is the Streamlit dashboard.
 3.  **Run a Single Backtest**: Click "Run Backtest" to see a detailed performance report, equity curve, and trade log.
 4.  **Run an Optimization**: Check the "Enable Parameter Optimization" box. This allows you to define a range for strategy parameters. The engine will run backtests for all combinations and display the results in a heatmap, helping you find the best-performing parameters.
 
+### Understanding the Backtest Output
+
+After running a backtest, you will see several logs. Here’s what they mean:
+
+#### Immediate Backtest Results
+
+This area appears right after you click "Run Backtest" and shows the results for that **single, specific run**.
+
+-   **Trade Log (under Backtest Results tab):**
+    -   **Purpose:** To give you an immediate, quick-glance list of all the simulated BUY and SELL orders that were executed during the backtest you just ran.
+    -   **When to use it:** Use this to quickly verify if the strategy traded as you expected. This log is temporary and only exists in memory for the current results.
+
+-   **Raw Backtest Log (under Backtest Results tab):**
+    -   **Purpose:** This is the detailed, step-by-step "console output" from the backtesting engine. It shows every signal generated, every order placement, and any intraday exit messages.
+    -   **When to use it:** This is your primary tool for **deep debugging**. If a trade didn't happen when you thought it should have, this log will tell you why.
+
+#### Trading Activity Logs (Permanent Archive)
+
+This is the main section at the bottom of the dashboard where you can review the **permanent, saved history of any past run**—whether it was a backtest or a live paper trading session.
+
+-   **Portfolio Log:** This shows how your portfolio's value changed over time. It is only populated by **live paper trading sessions**, not by backtests.
+-   **Trade Log:** This is the **permanent, database record** of every single trade from the run you select in the dropdown. Use this to audit and analyze trades from any past session.
+
 ### Deploying for Live Trading & Archiving (Production Environment)
 
 The live trading component is designed to be an automated, scheduled process, typically run on a server (like an AWS EC2 instance).

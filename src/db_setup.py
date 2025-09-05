@@ -80,20 +80,40 @@ def setup_databases():
         with sqlite3.connect(config.TRADING_DB_FILE) as con:
             print(f"Connected to trading log database: {config.TRADING_DB_FILE}")
             cursor = con.cursor()
+
+            # --- Migration Logic to Add run_id if Missing ---
+            def add_column_if_not_exists(table_name, column_name, column_type):
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                columns = [info[1] for info in cursor.fetchall()]
+                if column_name not in columns:
+                    print(f"  - Migrating '{table_name}': adding '{column_name}' column...")
+                    cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+                    print(f"  - Migration complete for '{table_name}'.")
+
+            # Step 1: Create tables if they don't exist (without run_id initially for compatibility)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS paper_trades (
-                    timestamp TIMESTAMP, symbol TEXT, action TEXT,
-                    quantity INTEGER, price REAL, is_live BOOLEAN
+                    timestamp TIMESTAMP, symbol TEXT, action TEXT, quantity INTEGER, price REAL, is_live BOOLEAN
                 );
             """)
-            print("  - Table 'paper_trades' is ready.")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS portfolio_log (
-                    timestamp TIMESTAMP, total_portfolio_value REAL, cash REAL,
-                    holdings_value REAL, realized_pnl REAL, unrealized_pnl REAL
+                    timestamp TIMESTAMP, total_portfolio_value REAL, cash REAL, holdings_value REAL, realized_pnl REAL, unrealized_pnl REAL
                 );
             """)
+
+            # Step 2: Run migration to add the 'run_id' column if it's missing
+            add_column_if_not_exists('paper_trades', 'run_id', 'TEXT')
+            add_column_if_not_exists('portfolio_log', 'run_id', 'TEXT')
+
+            # Step 3: Now that the column is guaranteed to exist, create the index
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_run_id ON paper_trades(run_id);")
+            print("  - Table 'paper_trades' is ready.")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_log_run_id ON portfolio_log(run_id);")
             print("  - Table 'portfolio_log' is ready.")
+
+            con.commit()
+
     except Exception as e:
         print(f"ERROR setting up trading log database: {e}")
 

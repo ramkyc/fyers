@@ -1,6 +1,6 @@
 # src/paper_trading/oms.py
 
-from .portfolio import Portfolio
+from src.paper_trading.portfolio import Portfolio
 from fyers_apiv3 import fyersModel
 import datetime
 import sqlite3
@@ -12,28 +12,34 @@ class OrderManager:
     Manages order execution, either simulated (for backtesting) or real (for live trading).
     It receives signals from strategies and translates them into trades, updating the portfolio.
     """
-    def __init__(self, portfolio: Portfolio, fyers: fyersModel.FyersModel = None):
+    def __init__(self, portfolio: Portfolio, run_id: str, fyers: fyersModel.FyersModel = None):
         """
         Initializes the OrderManager.
 
         Args:
             portfolio (Portfolio): The portfolio instance to update.
+            run_id (str): A unique identifier for this trading session or backtest run.
             fyers (fyersModel.FyersModel, optional): An authenticated fyersModel instance for live order placement.
         """
         self.portfolio = portfolio
+        self.run_id = run_id
         self.fyers = fyers
         # The db_setup.py script is now responsible for all table creation.
 
-    def _log_trade(self, timestamp, symbol, action, quantity, price, is_live):
+    def _log_trade(self, run_id, timestamp, symbol, action, quantity, price, is_live):
         """Logs a single trade to the database if logging is enabled."""
         try:
+            # Ensure the timestamp is a standard Python datetime object for SQLite compatibility
+            if hasattr(timestamp, 'to_pydatetime'):
+                timestamp = timestamp.to_pydatetime()
+
             with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                 con.execute(
                     """
-                    INSERT INTO paper_trades (timestamp, symbol, action, quantity, price, is_live)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO paper_trades (run_id, timestamp, symbol, action, quantity, price, is_live)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (timestamp, symbol, action, quantity, price, is_live)
+                    (run_id, timestamp, symbol, action, quantity, price, is_live)
                 )
                 con.commit()
         except Exception as e:
@@ -93,8 +99,8 @@ class OrderManager:
                     # For simplicity, we'll use the signal price as execution price for now
                     # A robust system would poll the order book for fill price and quantity.
                     print(f"{timestamp} | LIVE Order for {action} {quantity} {symbol} placed successfully.")
-                    self.portfolio.execute_order(symbol, action, quantity, price, timestamp)
-                    self._log_trade(timestamp, symbol, action, quantity, price, is_live=True)
+                    self.portfolio.execute_order(symbol, action, quantity, price, timestamp) # Portfolio updates itself
+                    self._log_trade(self.run_id, timestamp, symbol, action, quantity, price, is_live=True)
                 else:
                     print(f"{timestamp} | LIVE Order failed for {symbol}: {response.get('message', 'Unknown error')}")
 
@@ -105,4 +111,4 @@ class OrderManager:
             # --- Simulated Order Execution (for backtesting) ---
             print(f"{timestamp} | SIMULATED Order: {action} {quantity} {symbol} @ {price:.2f}")
             self.portfolio.execute_order(symbol, action, quantity, price, timestamp)
-            self._log_trade(timestamp, symbol, action, quantity, price, is_live=False)
+            self._log_trade(self.run_id, timestamp, symbol, action, quantity, price, is_live=False)

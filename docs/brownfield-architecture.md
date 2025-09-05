@@ -36,9 +36,10 @@ The system is designed with a clear separation of concerns, isolating data fetch
     - `LiveTradingEngine`: Connects to the Fyers WebSocket to process live ticks and pass them to a strategy.
 
 ### `src/backtesting`
-- **Purpose**: Provides a high-performance, vectorized backtesting engine.
-- **Key Files**: `engine.py`
-- **Functionality**: Loads historical data from the database, generates all trading signals for a given strategy at once using pandas, and then simulates the trades to produce a performance report. This vectorized approach is significantly faster than event-driven (loop-based) backtesting.
+- **Purpose**: Provides a flexible, event-driven backtesting engine.
+- **Key Files**: `engine.py`, `portfolio.py`
+- **Functionality**: The engine simulates the passage of time by iterating through historical data candle-by-candle. It supports both 'Positional' and 'Intraday' trading modes, with rules for time-windowed entries and automated end-of-day position closing. This event-driven model provides a more realistic simulation of live trading conditions.
+- **Isolation**: Each backtest run uses a dedicated, in-memory `BacktestPortfolio` and is assigned a unique `run_id` to ensure complete isolation of its trade logs.
 
 ### `src/strategies`
 - **Purpose**: Defines the logic for making trading decisions.

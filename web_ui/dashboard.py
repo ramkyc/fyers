@@ -36,6 +36,17 @@ def get_db_connection(db_file):
     """Establishes and returns a SQLite connection."""
     return sqlite3.connect(f'file:{db_file}?mode=ro', uri=True)
 
+@st.cache_data(ttl=3600) # Cache for 1 hour
+def get_market_time_options(interval_minutes=15):
+    """Generates a list of time options within market hours."""
+    times = []
+    start = datetime.datetime.strptime("09:15", "%H:%M")
+    end = datetime.datetime.strptime("15:30", "%H:%M")
+    while start <= end:
+        times.append(start.time())
+        start += datetime.timedelta(minutes=interval_minutes)
+    return times
+
 @st.cache_data(ttl=600) # Cache data for 10 minutes
 def load_historical_data(symbols, resolution, start_date, end_date):
     """
@@ -60,7 +71,7 @@ def load_historical_data(symbols, resolution, start_date, end_date):
     return df
 
 @st.cache_data(ttl=60) # Cache for 1 minute
-def load_log_data(query):
+def load_log_data(query, params=()):
     """Loads log data from the database."""
     # This function specifically reads from the trading log DB
     if not os.path.exists(config.TRADING_DB_FILE):
@@ -69,7 +80,7 @@ def load_log_data(query):
 
     try:
         con = sqlite3.connect(f'file:{config.TRADING_DB_FILE}?mode=ro', uri=True)
-        df = pd.read_sql_query(query, con)
+        df = pd.read_sql_query(query, con, params=params)
         return df
     except (sqlite3.OperationalError, pd.io.sql.DatabaseError) as e:
         # This can happen if the table doesn't exist yet (e.g., no live trades made)
@@ -87,20 +98,16 @@ def get_all_symbols():
     df = pd.read_sql_query(query, con)
     return df['symbol'].tolist() if not df.empty else []
 
-def run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash):
-    """Runs a backtest and captures its stdout log."""
-    import io
-    from contextlib import redirect_stdout
-    f = io.StringIO()
-    with redirect_stdout(f):
-        portfolio_result, last_prices = engine.run(
-            strategy_class=strategy_class,
-            symbols=symbols,
-            params=params,
-            initial_cash=initial_cash
-        )
-    backtest_log = f.getvalue()
-    return portfolio_result, last_prices, backtest_log
+@st.cache_data(ttl=60)
+def get_all_run_ids():
+    """Fetches all unique run_ids from the trading log database."""
+    if not os.path.exists(config.TRADING_DB_FILE):
+        return []
+    query = "SELECT DISTINCT run_id FROM paper_trades WHERE run_id IS NOT NULL ORDER BY timestamp DESC;"
+    df = load_log_data(query)
+    live_runs = [r for r in df['run_id'].tolist() if r.startswith('live_')]
+    backtest_runs = [r for r in df['run_id'].tolist() if not r.startswith('live_')]
+    return live_runs + backtest_runs # Prioritize live runs
 
 # This function must be defined at the top level to be pickleable by multiprocessing
 def run_backtest_for_worker(args):
@@ -108,21 +115,23 @@ def run_backtest_for_worker(args):
     A self-contained function to run a single backtest.
     Designed to be executed in a separate process to enable parallelization.
     """
-    start_date_str, end_date_str, db_file, resolution, symbols, params, initial_cash, strategy_name = args
+    start_date_str, end_date_str, db_file, resolution, symbols, params, initial_cash, strategy_name, backtest_type = args
 
     # These imports are necessary inside the worker process
     from src.backtesting.engine import BacktestingEngine
     from src.reporting.performance_analyzer import PerformanceAnalyzer
     strategy_class = STRATEGY_MAPPING[strategy_name]
+    start_datetime = datetime.datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
+    end_datetime = datetime.datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
 
     engine = BacktestingEngine(
-        start_date=start_date_str,
-        end_date=end_date_str,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
         db_file=db_file,
         resolution=resolution
     )
     
-    portfolio_result, last_prices, _ = run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash)
+    portfolio_result, last_prices, _ = run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash, backtest_type)
     
     if portfolio_result and last_prices:
         analyzer = PerformanceAnalyzer(portfolio_result)
@@ -130,6 +139,22 @@ def run_backtest_for_worker(args):
         metrics.update(params) # Add all params to the result for later joining
         return metrics
     return None
+
+def run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash, backtest_type):
+    """Runs a backtest and captures its stdout log."""
+    import io
+    from contextlib import redirect_stdout
+    f = io.StringIO()
+    with redirect_stdout(f):
+        portfolio_result, last_prices, run_id = engine.run(
+            strategy_class=strategy_class,
+            symbols=symbols,
+            params=params,
+            initial_cash=initial_cash,
+            backtest_type=backtest_type
+        )
+    backtest_log = f.getvalue()
+    return portfolio_result, last_prices, backtest_log
 
 def display_optimization_results(results_df):
     """Renders the UI for displaying optimization results."""
@@ -195,11 +220,30 @@ def display_single_backtest_results(portfolio_result, last_prices, backtest_log)
     metrics = analyzer.calculate_metrics(last_prices)
 
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total P&L", f"₹{metrics['total_pnl']:,.2f}", f"{metrics['total_pnl'] / (metrics['initial_cash'] or 1):.2%}")
-    col2.metric("Max Drawdown", f"{metrics['max_drawdown'] * 100:.2f}%")
-    col3.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
-    col4.metric("Win Rate", f"{metrics['win_rate']:.2%}")
-    col5.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
+    col1.metric(
+        "Total P&L", 
+        f"₹{metrics['total_pnl']:,.2f}", 
+        f"{metrics['total_pnl'] / (metrics['initial_cash'] or 1):.2%}",
+        help="Total Profit and Loss. The percentage shows the return on the initial cash."
+    )
+    col2.metric(
+        "Max Drawdown", 
+        f"{metrics['max_drawdown'] * 100:.2f}%",
+        help="The largest peak-to-trough decline in portfolio value. A lower value is better."
+    )
+    col3.metric(
+        "Sharpe Ratio", 
+        f"{metrics['sharpe_ratio']:.2f}",
+        help="Measures risk-adjusted return. A higher value indicates better performance for the amount of risk taken. Calculated using a 6% annual risk-free rate for Indian markets."
+    )
+    col4.metric(
+        "Win Rate", f"{metrics['win_rate']:.2%}",
+        help="The percentage of trades that were profitable."
+    )
+    col5.metric(
+        "Profit Factor", f"{metrics['profit_factor']:.2f}",
+        help="The ratio of gross profits to gross losses. A value greater than 1 indicates a profitable system."
+    )
 
     st.subheader("Equity Curve")
     if portfolio_result.equity_curve:
@@ -233,13 +277,32 @@ def main():
         default=pre_selected_symbols
     )
 
+    # Backtest Type selection
+    backtest_type = st.sidebar.radio(
+        "Backtest Type",
+        ('Positional', 'Intraday'),
+        index=0, # Default to Positional
+        help="**Positional**: Holds trades across multiple days until an exit signal. **Intraday**: All open positions are force-closed at the end of each day (15:14)."
+    )
+
     # Resolution selection
     resolutions = ["D", "60", "30", "15", "5", "1"]
     resolution = st.sidebar.selectbox("Select Resolution", options=resolutions, index=2) # Default to 15 min
 
+    # Generate time options for select boxes
+    time_options = get_market_time_options()
+
     # Date Range selection
-    end_date = st.sidebar.date_input("End Date", value=datetime.date.today())
-    start_date = st.sidebar.date_input("Start Date", value=end_date - datetime.timedelta(days=90)) # Default to 3 months prior
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("##### End Date & Time")
+    end_date = st.sidebar.date_input("End Date", value=datetime.date.today(), key="end_date")
+    end_time = st.sidebar.selectbox("End Time", options=time_options, index=len(time_options) - 1, key="end_time")
+    end_datetime = datetime.datetime.combine(end_date, end_time)
+
+    st.sidebar.markdown("##### Start Date & Time")
+    start_date = st.sidebar.date_input("Start Date", value=end_datetime.date() - datetime.timedelta(days=90), key="start_date")
+    start_time = st.sidebar.selectbox("Start Time", options=time_options, index=0, key="start_time")
+    start_datetime = datetime.datetime.combine(start_date, start_time)
 
     # --- Strategy Selection ---
     st.sidebar.header("Strategy Selection")
@@ -287,8 +350,8 @@ def main():
             st.warning("Please select at least one symbol to run the backtest.")
         else:
             with st.spinner(f"Running backtest for {len(symbols_to_test)} symbols..."):
-                start_date_str = start_date.strftime("%Y-%m-%d")
-                end_date_str = end_date.strftime("%Y-%m-%d")
+                start_date_str = start_datetime.strftime("%Y-%m-%d %H:%M:%S")
+                end_date_str = end_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
                 if run_optimization:
                     param_combinations = []
@@ -298,7 +361,7 @@ def main():
                     else:
                         for p in param_combinations:
                             p['trade_quantity'] = trade_quantity
-                        worker_args = [(start_date_str, end_date_str, config.HISTORICAL_MARKET_DB_FILE, resolution, symbols_to_test, params, initial_cash, selected_strategy_name) for params in param_combinations]
+                        worker_args = [(start_date_str, end_date_str, config.HISTORICAL_MARKET_DB_FILE, resolution, symbols_to_test, params, initial_cash, selected_strategy_name, backtest_type) for params in param_combinations]
                         results = [] # This was already here, but for clarity in the diff
                         progress_text = st.empty()
                         progress_bar = st.progress(0)
@@ -319,10 +382,15 @@ def main():
 
                 else: # Run a single backtest
                     strategy_params['trade_quantity'] = trade_quantity
-                    engine = BacktestingEngine(start_date=start_date_str, end_date=end_date_str, db_file=config.HISTORICAL_MARKET_DB_FILE, resolution=resolution)
+                    engine = BacktestingEngine(
+                        start_datetime=start_datetime, 
+                        end_datetime=end_datetime, 
+                        db_file=config.HISTORICAL_MARKET_DB_FILE, 
+                        resolution=resolution
+                    )
                     
                     portfolio_result, last_prices, backtest_log = run_and_capture_backtest(
-                        engine, strategy_class, symbols_to_test, strategy_params, initial_cash
+                        engine, strategy_class, symbols_to_test, strategy_params, initial_cash, backtest_type
                     )
 
                     if portfolio_result:
@@ -332,28 +400,37 @@ def main():
                         st.subheader("Backtest Log")
                         st.code(backtest_log)
 
-    # --- Live Data Logs ---
-    st.header("Live Data Logs")
+    # --- Trading Activity Logs ---
+    st.header("Trading Activity Logs")
+    st.markdown("View logs from specific backtest runs or live trading sessions.")
+
+    all_runs = get_all_run_ids()
+    if not all_runs:
+        st.info("No trading activity has been logged yet. Run a backtest or a live session to see logs here.")
+        return
+
+    selected_run_id = st.selectbox("Select a Run ID to inspect:", options=all_runs)
+
     log_tab1, log_tab2 = st.tabs(["Portfolio Log", "Trade Log"])
 
     with log_tab1:
-        st.subheader("Live Portfolio Log")
-        portfolio_log_query = "SELECT * FROM portfolio_log ORDER BY timestamp DESC LIMIT 100;"
-        portfolio_log_df = load_log_data(portfolio_log_query)
+        st.subheader(f"Portfolio Log for Run: `{selected_run_id}`")
+        portfolio_log_query = "SELECT * FROM portfolio_log WHERE run_id = ? ORDER BY timestamp ASC;"
+        portfolio_log_df = load_log_data(portfolio_log_query, params=(selected_run_id,))
         if not portfolio_log_df.empty:
-            st.dataframe(portfolio_log_df)
             st.line_chart(portfolio_log_df.set_index('timestamp')[['total_portfolio_value', 'cash', 'holdings_value']])
+            st.dataframe(portfolio_log_df.sort_values(by="timestamp", ascending=False))
         else:
-            st.info("No portfolio log data available.")
+            st.info("No portfolio log data available for this run. (Note: Backtests do not generate persistent portfolio logs; their equity curves are shown in the results above.)")
 
     with log_tab2:
-        st.subheader("Trade Log")
-        trade_log_query = "SELECT * FROM paper_trades ORDER BY timestamp DESC LIMIT 100;"
-        trade_log_df = load_log_data(trade_log_query)
+        st.subheader(f"Trade Log for Run: `{selected_run_id}`")
+        trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;"
+        trade_log_df = load_log_data(trade_log_query, params=(selected_run_id,))
         if not trade_log_df.empty:
             st.dataframe(trade_log_df)
         else:
-            st.info("No trade log data available.")
+            st.info("No trades were executed in this run.")
 
 if __name__ == "__main__":
     main()

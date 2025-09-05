@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-09-05
+
+### Added
+-   **Event-Driven Backtesting Engine**: The backtesting engine has been completely refactored from a vectorized to an event-driven model. This provides a more realistic simulation and allows for complex time-based rules.
+-   **Positional & Intraday Modes**: The dashboard and engine now support two backtest types. 'Positional' holds trades overnight, while 'Intraday' automatically closes all positions at the end of the day.
+-   **Time-Windowed Entries**: Users can now specify exact start and end times in the UI, and the backtester will only consider entry signals within that time window each day.
+-   **Isolated Backtest Runs**: Each backtest is now assigned a unique `run_id`, and a dedicated `BacktestPortfolio` class is used to ensure that all simulations and their logs are completely isolated from each other and from live trading.
+
+### Changed
+-   **Strategy Logic**: Strategies now use the `on_data` method for both backtesting and live trading, simplifying logic and ensuring consistency. The `generate_signals` method has been removed.
+-   **Dashboard UI**: Upgraded date selectors to full datetime pickers and added a toggle for backtest type.
+-   **Dynamic Intraday Exits**: The intraday exit time is no longer hardcoded and is now calculated dynamically based on the official market close time.
+
 ## [0.3.0] - 2025-09-05
 
 ### Added

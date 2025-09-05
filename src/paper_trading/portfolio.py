@@ -8,14 +8,16 @@ class Portfolio:
     Manages the state of a paper trading account, including cash, positions, and P&L.
     This class is designed to be used by both the backtesting and live paper trading engines.
     """
-    def __init__(self, initial_cash=100000.0, enable_logging=True):
+    def __init__(self, initial_cash=100000.0, run_id: str = None, enable_logging=True):
         """
         Initializes the portfolio.
 
         Args:
             initial_cash (float): The starting cash balance.
+            run_id (str): A unique identifier for this trading session or backtest run.
             enable_logging (bool): Whether to log portfolio performance to the database.
         """
+        self.run_id = run_id
         self.initial_cash = initial_cash
         self.current_cash = initial_cash
         self.positions = {}  # Key: symbol, Value: {'quantity': int, 'avg_price': float}

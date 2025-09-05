@@ -79,7 +79,7 @@ class PerformanceAnalyzer:
         max_drawdown = equity_df['drawdown'].min()
         return abs(max_drawdown)
 
-    def _calculate_sharpe_ratio(self, risk_free_rate: float = 0.02) -> float:
+    def _calculate_sharpe_ratio(self, risk_free_rate: float = 0.06) -> float:
         """
         Calculates the annualized Sharpe Ratio.
 
@@ -173,13 +173,14 @@ class PerformanceAnalyzer:
 
         return metrics
 
-    def print_performance_report(self, final_prices: dict):
+    def print_performance_report(self, final_prices: dict, run_id: str = "N/A"):
         """
         Prints a detailed performance report.
         """
         metrics = self.calculate_metrics(final_prices)
 
         print("\n--- Backtest Performance Report ---")
+        print(f"Run ID: {run_id}")
         print(f"Initial Portfolio Value: {metrics['initial_cash']:,.2f}")
         print(f"Final Portfolio Value:   {metrics['total_portfolio_value']:,.2f}")
         print("-----------------------------------")
