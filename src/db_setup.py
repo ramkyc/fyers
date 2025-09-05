@@ -11,40 +11,93 @@ if project_root not in sys.path:
 
 import config
 
-def setup_trading_database():
+def setup_databases():
     """
-    Initializes the trading database and creates all necessary tables.
-    This function is idempotent and can be run multiple times safely.
+    Initializes all SQLite databases and creates the necessary tables
+    if they do not already exist. This script is safe to run multiple times.
     """
-    print(f"Setting up trading database at: {config.TRADING_DB_FILE}")
-    
-    # Ensure the data directory exists
-    os.makedirs(config.DATA_DIR, exist_ok=True)
+    print("--- Starting Database Setup ---")
 
-    with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
-        # Create the paper_trades table (used by OrderManager)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS paper_trades (
-                timestamp TIMESTAMP,
-                symbol VARCHAR,
-                action VARCHAR,
-                quantity BIGINT,
-                price DOUBLE,
-                is_live BOOLEAN
-            );
-        """)
-        # Create the portfolio_log table (used by Portfolio)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS portfolio_log (
-                timestamp TIMESTAMP,
-                total_portfolio_value DOUBLE,
-                cash DOUBLE,
-                holdings_value DOUBLE,
-                realized_pnl DOUBLE,
-                unrealized_pnl DOUBLE
-            );
-        """)
-    print("Trading database setup complete. All tables are ready.")
+    # Ensure the data directory exists
+    if not os.path.exists(config.DATA_DIR):
+        os.makedirs(config.DATA_DIR)
+        print(f"Created data directory at: {config.DATA_DIR}")
+
+    # --- 1. Setup Historical Market Data Database ---
+    try:
+        with sqlite3.connect(config.HISTORICAL_MARKET_DB_FILE) as con:
+            print(f"Connected to historical market database: {config.HISTORICAL_MARKET_DB_FILE}")
+            cursor = con.cursor()
+            # Table for historical OHLCV candle data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS historical_data (
+                    timestamp TIMESTAMP,
+                    symbol TEXT,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume INTEGER,
+                    resolution TEXT,
+                    UNIQUE(timestamp, symbol, resolution)
+                );
+            """)
+            print("  - Table 'historical_data' is ready.")
+            # Table for archived live tick data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS historical_ticks (
+                    timestamp TIMESTAMP,
+                    symbol TEXT,
+                    ltp REAL,
+                    volume INTEGER,
+                    UNIQUE(timestamp, symbol)
+                );
+            """)
+            print("  - Table 'historical_ticks' is ready.")
+    except Exception as e:
+        print(f"ERROR setting up historical market database: {e}")
+
+    # --- 2. Setup Live Market Data Database ---
+    try:
+        with sqlite3.connect(config.LIVE_MARKET_DB_FILE) as con:
+            print(f"Connected to live market database: {config.LIVE_MARKET_DB_FILE}")
+            cursor = con.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS live_ticks (
+                    timestamp TIMESTAMP,
+                    symbol TEXT,
+                    ltp REAL,
+                    volume INTEGER,
+                    UNIQUE(timestamp, symbol)
+                );
+            """)
+            print("  - Table 'live_ticks' is ready.")
+    except Exception as e:
+        print(f"ERROR setting up live market database: {e}")
+
+    # --- 3. Setup Trading Log Database ---
+    try:
+        with sqlite3.connect(config.TRADING_DB_FILE) as con:
+            print(f"Connected to trading log database: {config.TRADING_DB_FILE}")
+            cursor = con.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS paper_trades (
+                    timestamp TIMESTAMP, symbol TEXT, action TEXT,
+                    quantity INTEGER, price REAL, is_live BOOLEAN
+                );
+            """)
+            print("  - Table 'paper_trades' is ready.")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_log (
+                    timestamp TIMESTAMP, total_portfolio_value REAL, cash REAL,
+                    holdings_value REAL, realized_pnl REAL, unrealized_pnl REAL
+                );
+            """)
+            print("  - Table 'portfolio_log' is ready.")
+    except Exception as e:
+        print(f"ERROR setting up trading log database: {e}")
+
+    print("\n--- Database Setup Complete ---")
 
 if __name__ == "__main__":
-    setup_trading_database()
+    setup_databases()

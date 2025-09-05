@@ -72,3 +72,41 @@ The current schema in `src/paper_trading/engine.py` for storing live ticks is in
 
 -   **Action**: Modify `src/tick_collector.py` or create a new master scheduler script.
 -   **Logic**: Add a new scheduled job to run `python src/archive_live_data.py` at a time after market close, for example, at 16:00.
+
+## Part 3: Data Completeness Verification
+
+To ensure the integrity of our backtesting and analysis, it's crucial to verify that the historical data has been downloaded completely. This section outlines the methodology for this verification.
+
+### 3.1. Methodology
+
+The verification process involves comparing the number of records present in the database against the theoretically expected number of records for a given period.
+
+1.  **Calculate Trading Days**: Determine the total number of market working days within the specified date range. This can be done by iterating through each day and using the `is_market_working_day` function from `src/market_calendar.py`.
+
+2.  **Calculate Expected Candles per Day**: The Indian market is open from 09:15 to 15:30, which is 375 minutes. The expected number of candles per day for each resolution is:
+    *   **1-minute**: 375 candles
+    *   **5-minute**: 75 candles (375 / 5)
+    *   **15-minute**: 25 candles (375 / 15)
+    *   **30-minute**: 13 candles (12 full 30-min candles + 1 partial 15-min candle)
+    *   **60-minute**: 7 candles (6 full 60-min candles + 1 partial 15-min candle)
+    *   **Daily**: 1 candle
+
+3.  **Calculate Total Expected Records**: Multiply the number of trading days by the expected candles per day for each resolution.
+    `Total Expected = (Trading Days) * (Candles per Day)`
+
+4.  **Compare with Actuals**: Use the `src/check_data_coverage.py` script to get the actual record count from the database and compare it with the calculated expected count.
+
+### 3.2. Example Calculation
+
+We want to work with data from 1st April, 2024 to till date.  
+For a period with **356 trading days** (from `2024-04-01` to `2025-09-05`):
+
+| Resolution | Actual Records | Trading Days | Candles/Day | Expected Records | Completeness |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1 min** | 133,290 | 356 | 375 | 133,500 | 99.84% |
+| **5 min** | 26,658 | 356 | 75 | 26,700 | 99.84% |
+| **15 min** | 8,886 | 356 | 25 | 8,900 | 99.84% |
+| **30 min** | 4,623 | 356 | 13 | 4,628 | 99.89% |
+| **60 min** | 2,490 | 356 | 7 | 2,492 | 99.92% |
+
+**Note**: A completeness of >99.5% is generally considered excellent, as minor discrepancies can occur due to market-specific events like brief trading halts.

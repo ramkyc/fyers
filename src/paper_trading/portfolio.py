@@ -20,34 +20,24 @@ class Portfolio:
         self.current_cash = initial_cash
         self.positions = {}  # Key: symbol, Value: {'quantity': int, 'avg_price': float}
         self.trades = [] # To log all trades
-        self.equity_curve = [] # To log portfolio value over time for analysis
+        self.equity_curve = [] # To log portfolio value over time for backtest analysis
         self.enable_logging = enable_logging
-        self.con = None
-        if self.enable_logging:
-            import sqlite3
-            self.con = sqlite3.connect(database=config.TRADING_DB_FILE)
-        self.tick_count = 0
 
     def log_portfolio_value(self, timestamp, current_prices):
+        """
+        Logs the portfolio's value. For backtesting, it stores in memory.
+        For live trading, the engine itself handles DB logging.
+        """
         summary = self.get_performance_summary(current_prices)
         
         # Always append to the in-memory list for backtest analysis
         self.equity_curve.append(
             {'timestamp': timestamp, 
-             'value': summary['total_portfolio_value']
+             'value': summary['total_portfolio_value'],
+             'cash': summary['final_cash'],
+             'holdings': summary['holdings_value']
             }
         )
-
-        # Only log to database if enabled
-        if self.enable_logging and self.con:
-            self.con.execute(
-                """
-                INSERT INTO portfolio_log (timestamp, total_portfolio_value, cash, holdings_value, realized_pnl, unrealized_pnl)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (timestamp, summary['total_portfolio_value'], summary['final_cash'], summary['holdings_value'], summary['realized_pnl'], summary['unrealized_pnl'])
-            )
-            self.con.commit()
 
     def execute_order(self, symbol: str, action: str, quantity: int, price: float, timestamp: datetime):
         """

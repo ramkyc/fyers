@@ -22,21 +22,7 @@ class OrderManager:
         """
         self.portfolio = portfolio
         self.fyers = fyers
-        self._init_trade_log()
-
-    def _init_trade_log(self):
-        """Initializes the paper_trades table in the database."""
-        with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS paper_trades (
-                    timestamp TIMESTAMP,
-                    symbol VARCHAR,
-                    action VARCHAR,
-                    quantity BIGINT,
-                    price DOUBLE,
-                    is_live BOOLEAN
-                );
-            """)
+        # The db_setup.py script is now responsible for all table creation.
 
     def _log_trade(self, timestamp, symbol, action, quantity, price, is_live):
         """Logs a single trade to the database if logging is enabled."""

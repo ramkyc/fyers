@@ -234,7 +234,7 @@ def main():
     )
 
     # Resolution selection
-    resolutions = ["D", "60", "15", "5", "1"]
+    resolutions = ["D", "60", "30", "15", "5", "1"]
     resolution = st.sidebar.selectbox("Select Resolution", options=resolutions, index=2) # Default to 15 min
 
     # Date Range selection
