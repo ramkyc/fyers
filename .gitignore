@@ -33,3 +33,6 @@ logs/
 
 # pytest
 .pytest_cache/
+
+# Data files
+data/*
