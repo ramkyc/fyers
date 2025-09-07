@@ -33,7 +33,7 @@ class PerformanceAnalyzer:
                     'price': trade['price']
                 })
             elif trade['action'] == 'SELL':
-                sell_quantity = trade['quantity']
+                sell_quantity = abs(trade['quantity'])
                 sell_price = trade['price']
                 
                 while sell_quantity > 0 and open_positions[symbol]:

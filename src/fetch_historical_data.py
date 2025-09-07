@@ -161,7 +161,10 @@ def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list,
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """, data_to_insert)
                         con.commit() # Commit after each successful chunk
-                        print(f"  - Stored data for chunk.")
+                        if cursor.rowcount > 0:
+                            print(f"  - Stored {cursor.rowcount} new candles.")
+                        else:
+                            print(f"  - Skipped existing data for chunk.")
                     else:
                         print(f"  - Could not fetch data for chunk. Response: {response.get('message', 'No message')}")
 

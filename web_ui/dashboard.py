@@ -20,11 +20,13 @@ from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.backtesting.engine import BacktestingEngine
 import config # config.py is now in the project root
 from src.strategies.simple_ma_crossover import SMACrossoverStrategy
+from src.strategies.opening_price_crossover import OpeningPriceCrossoverStrategy
 # Add other strategies here as they are created
 # from src.strategies.rsi_strategy import RSIStrategy
 
 STRATEGY_MAPPING = {
     "Simple MA Crossover": SMACrossoverStrategy,
+    "Opening Price Crossover": OpeningPriceCrossoverStrategy,
 }
 
 # --- Configuration ---

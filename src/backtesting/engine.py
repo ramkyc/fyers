@@ -40,7 +40,7 @@ class BacktestingEngine:
         Loads historical data from the database for the specified symbols and date range.
         """
         query = f"""
-            SELECT timestamp, symbol, close
+            SELECT timestamp, symbol, open, high, low, close, volume
             FROM historical_data
             WHERE symbol IN ({','.join(['?']*len(symbols))})
             AND resolution = ?
@@ -110,7 +110,13 @@ class BacktestingEngine:
 
             # Format the data for the strategy's on_data method
             current_market_data = {
-                row.name[1]: {'close': row['close']} for _, row in group.iterrows()
+                row.name[1]: {
+                    'open': row['open'],
+                    'high': row['high'],
+                    'low': row['low'],
+                    'close': row['close'],
+                    'volume': row['volume']
+                } for _, row in group.iterrows()
             }
 
             # --- Rule: Time-Windowed Entries ---
