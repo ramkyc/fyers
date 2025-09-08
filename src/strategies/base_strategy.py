@@ -2,6 +2,8 @@
 
 from abc import ABC, abstractmethod
 import datetime
+from typing import Dict
+import sys
 
 class BaseStrategy(ABC):
     """
@@ -38,16 +40,19 @@ class BaseStrategy(ABC):
         return []
 
     @abstractmethod
-    def on_data(self, timestamp: datetime, data: dict[str, dict[str, object]], **kwargs):
+    def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         """
         This method is called for each new data point (live tick or historical bar).
 
         Args:
             timestamp (datetime): The timestamp of the current data point.
-            data (dict[str, dict[str, object]]): A dictionary where keys are symbols and values are the data
-                         (e.g., {'NSE:SBIN-EQ': {'close': 350.5, ...}}).
+            market_data_all_resolutions (dict): A dictionary where keys are resolutions (e.g., "D", "60", "1")
+                                                and values are dictionaries of market data for that resolution.
+                                                Each market data dictionary has symbols as keys and OHLCV data as values.
+                                                Example: {"D": {'NSE:SBIN-EQ': {'open': 100, 'high': 105, ...}}}.
             **kwargs: Additional keyword arguments for specific implementations (e.g., is_live_trading).
         """
+        
         pass
 
     def buy(self, symbol: str, quantity: int, price: float, timestamp: datetime, is_live_trading: bool = False):

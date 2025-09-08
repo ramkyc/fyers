@@ -69,6 +69,40 @@ def _get_max_days_for_resolution(resolution: str) -> int:
     else:
         return 30 # Default to a safe value
 
+def _get_date_chunks(start_date, end_date, max_days):
+    """Generator to yield date chunks for API calls."""
+    current_start = start_date
+    while current_start <= end_date:
+        current_end = current_start + datetime.timedelta(days=max_days - 1)
+        if current_end > end_date:
+            current_end = end_date
+        yield current_start, current_end
+        current_start = current_end + datetime.timedelta(days=1)
+
+def _fetch_and_store_chunk(fyers, symbol, resolution, start_date, end_date, cursor):
+    """Fetches and stores a single chunk of data."""
+    start_date_str = start_date.strftime("%Y-%m-%d")
+    end_date_str = end_date.strftime("%Y-%m-%d")
+    print(f"Fetching chunk for {symbol} ({resolution}) from {start_date_str} to {end_date_str}...")
+    try:
+        data = {
+            "symbol": symbol, "resolution": resolution, "date_format": "1",
+            "range_from": start_date_str, "range_to": end_date_str, "cont_flag": "1"
+        }
+        response = fyers.history(data=data)
+
+        if response.get("code") == 200 and response.get("candles"):
+            candles = response["candles"]
+            print(f"  - Fetched {len(candles)} candles.")
+            data_to_insert = [(datetime.datetime.fromtimestamp(c[0]), symbol, c[1], c[2], c[3], c[4], c[5], resolution) for c in candles]
+            cursor.executemany(f"INSERT OR IGNORE INTO {HISTORICAL_TABLE} (timestamp, symbol, open, high, low, close, volume, resolution) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", data_to_insert)
+            return cursor.rowcount
+        else:
+            print(f"  - Could not fetch data for chunk. Response: {response.get('message', 'No message')}")
+            return 0
+    except Exception as e:
+        print(f"  - An error occurred during chunk fetch/store: {e}")
+        return 0
 
 def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list, resolutions: list):
     """
@@ -126,53 +160,14 @@ def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list,
             # --- Chunking Logic ---            
             overall_end_date = datetime.date.today()
             max_days_per_call = _get_max_days_for_resolution(resolution)
-            
-            current_start_date = overall_start_date
-            while current_start_date <= overall_end_date:
-                current_end_date = current_start_date + datetime.timedelta(days=max_days_per_call - 1)
-                if current_end_date > overall_end_date:
-                    current_end_date = overall_end_date
 
-                start_date_str = current_start_date.strftime("%Y-%m-%d")
-                end_date_str = current_end_date.strftime("%Y-%m-%d")
-
-                print(f"Fetching chunk for {symbol} ({resolution}) from {start_date_str} to {end_date_str}...")
-                try:
-                    data = {
-                        "symbol": symbol,
-                        "resolution": resolution,
-                        "date_format": "1",
-                        "range_from": start_date_str,
-                        "range_to": end_date_str,
-                        "cont_flag": "1"
-                    }
-                    response = fyers.history(data=data)
-
-                    if response.get("code") == 200 and response.get("candles"):
-                        candles = response["candles"]
-                        print(f"  - Fetched {len(candles)} candles.")
-
-                        data_to_insert = [
-                            (datetime.datetime.fromtimestamp(c[0]), symbol, c[1], c[2], c[3], c[4], c[5], resolution)
-                            for c in candles
-                        ]
-                        cursor.executemany(f"""
-                            INSERT OR IGNORE INTO {HISTORICAL_TABLE} (timestamp, symbol, open, high, low, close, volume, resolution)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, data_to_insert)
-                        con.commit() # Commit after each successful chunk
-                        if cursor.rowcount > 0:
-                            print(f"  - Stored {cursor.rowcount} new candles.")
-                        else:
-                            print(f"  - Skipped existing data for chunk.")
-                    else:
-                        print(f"  - Could not fetch data for chunk. Response: {response.get('message', 'No message')}")
-
-                except Exception as e:
-                    print(f"  - An error occurred during chunk fetch/store: {e}")
-
-                # Move to the next chunk
-                current_start_date = current_end_date + datetime.timedelta(days=1)
+            for start_chunk, end_chunk in _get_date_chunks(overall_start_date, overall_end_date, max_days_per_call):
+                rows_stored = _fetch_and_store_chunk(fyers, symbol, resolution, start_chunk, end_chunk, cursor)
+                if rows_stored > 0:
+                    print(f"  - Stored {rows_stored} new candles.")
+                    con.commit() # Commit after each successful chunk
+                else:
+                    print(f"  - No new data for chunk or an error occurred.")
 
         # Close the connection after processing all resolutions for the current symbol
         if 'con' in locals() and con:
@@ -181,13 +176,12 @@ def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list,
 
 
 def _get_bse_month_code(month: int) -> str:
-    """Converts a month number to the single-character BSE code."""
-    if 1 <= month <= 9:
-        return str(month)
+    """Converts a month number to the standard single-character futures/options code."""
     return {
-        10: 'O',
-        11: 'N',
-        12: 'D'
+        1: 'F', 2: 'G', 3: 'H',
+        4: 'J', 5: 'K', 6: 'M',
+        7: 'N', 8: 'Q', 9: 'U',
+        10: 'V', 11: 'X', 12: 'Z'
     }.get(month, '')
 
 
@@ -204,8 +198,9 @@ def get_atm_option_symbols(fyers: fyersModel.FyersModel):
     indices = {
         "NIFTY": {"symbol": "NSE:NIFTY50-INDEX", "strike_interval": 100, "name": "NIFTY", "exchange": "NSE", "month_format": "%b"},
         "BANKNIFTY": {"symbol": "NSE:NIFTYBANK-INDEX", "strike_interval": 100, "name": "BANKNIFTY", "exchange": "NSE", "month_format": "%b"},
-        "SENSEX": {"symbol": "BSE:SENSEX-INDEX", "strike_interval": 100, "name": "SENSEX", "exchange": "BSE", "month_format": "bse_code"},
-        "BANKEX": {"symbol": "BSE:BANKEX-INDEX", "strike_interval": 100, "name": "BANKEX", "exchange": "BSE", "month_format": "bse_code"},
+        # Per Fyers documentation, BSE options also use the short month name format.
+        "SENSEX": {"symbol": "BSE:SENSEX-INDEX", "strike_interval": 100, "name": "SENSEX", "exchange": "BSE", "month_format": "%b"},
+        "BANKEX": {"symbol": "BSE:BANKEX-INDEX", "strike_interval": 100, "name": "BANKEX", "exchange": "BSE", "month_format": "%b"},
     }
 
     option_symbols = []
@@ -233,16 +228,11 @@ def get_atm_option_symbols(fyers: fyersModel.FyersModel):
                     # Construct the option symbols based on the exchange
                     year = str(expiry_date.year)[-2:]
                     month_format = index_data["month_format"]
-                    day = expiry_date.strftime("%d")
+                    day = expiry_date.strftime("%d") # e.g., '05', '11'
                     
-                    if month_format == "%b":
-                        month = expiry_date.strftime("%b").upper()
-                        ce_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}CE"
-                        pe_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}PE"
-                    elif month_format == "bse_code":
-                        month_code = _get_bse_month_code(expiry_date.month)
-                        ce_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month_code}{day}{atm_strike}CE"
-                        pe_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month_code}{day}{atm_strike}PE"
+                    month = expiry_date.strftime(month_format).upper()
+                    ce_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}CE"
+                    pe_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}PE"
 
                     option_symbols.extend([ce_symbol, pe_symbol])
                     print(f"Constructed symbols: {ce_symbol}, {pe_symbol}")

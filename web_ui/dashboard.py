@@ -14,6 +14,8 @@ import sqlite3
 import plotly.graph_objects as go
 import plotly.express as px
 import concurrent.futures
+from streamlit_option_menu import option_menu
+from streamlit_autorefresh import st_autorefresh
 
 from src.paper_trading.portfolio import Portfolio
 from src.reporting.performance_analyzer import PerformanceAnalyzer
@@ -110,6 +112,21 @@ def get_all_run_ids():
     live_runs = [r for r in df['run_id'].tolist() if r.startswith('live_')]
     backtest_runs = [r for r in df['run_id'].tolist() if not r.startswith('live_')]
     return live_runs + backtest_runs # Prioritize live runs
+
+@st.cache_data(ttl=10) # Cache for 10 seconds for live data
+def load_live_ticks():
+    """Loads the last few ticks from the live market data database."""
+    if not os.path.exists(config.LIVE_MARKET_DB_FILE):
+        return pd.DataFrame()
+    try:
+        with sqlite3.connect(f'file:{config.LIVE_MARKET_DB_FILE}?mode=ro', uri=True) as con:
+            query = "SELECT * FROM live_ticks ORDER BY timestamp DESC LIMIT 10;"
+            df = pd.read_sql_query(query, con)
+            return df
+    except Exception as e:
+        # Table might not exist if engine hasn't run yet
+        st.info(f"Could not load live tick data. The table might not exist yet. Error: {e}")
+        return pd.DataFrame()
 
 # This function must be defined at the top level to be pickleable by multiprocessing
 def run_backtest_for_worker(args):
@@ -260,94 +277,17 @@ def display_single_backtest_results(portfolio_result, last_prices, backtest_log)
     with tab2:
         st.code(backtest_log)
 
-def main():
-    """Main function to run the Streamlit dashboard."""
-    st.set_page_config(layout="wide")
-    st.title("TraderBuddy Dashboard")
-
-    # --- Sidebar for Configuration ---
-    st.sidebar.header("Backtest Configuration")
-
-    # Symbols selection
-    all_symbols = get_all_symbols()
-    default_symbols = ["NSE:SBIN-EQ", "NSE:RELIANCE-EQ", "NSE:HDFCBANK-EQ"]
-    pre_selected_symbols = [s for s in default_symbols if s in all_symbols]
-
-    symbols_to_test = st.sidebar.multiselect(
-        "Select Symbols",
-        options=all_symbols,
-        default=pre_selected_symbols
-    )
-
-    # Backtest Type selection
-    backtest_type = st.sidebar.radio(
-        "Backtest Type",
-        ('Positional', 'Intraday'),
-        index=0, # Default to Positional
-        help="**Positional**: Holds trades across multiple days until an exit signal. **Intraday**: All open positions are force-closed at the end of each day (15:14)."
-    )
-
-    # Resolution selection
-    resolutions = ["D", "60", "30", "15", "5", "1"]
-    resolution = st.sidebar.selectbox("Select Resolution", options=resolutions, index=2) # Default to 15 min
-
-    # Generate time options for select boxes
-    time_options = get_market_time_options()
-
-    # Date Range selection
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("##### End Date & Time")
-    end_date = st.sidebar.date_input("End Date", value=datetime.date.today(), key="end_date")
-    end_time = st.sidebar.selectbox("End Time", options=time_options, index=len(time_options) - 1, key="end_time")
-    end_datetime = datetime.datetime.combine(end_date, end_time)
-
-    st.sidebar.markdown("##### Start Date & Time")
-    start_date = st.sidebar.date_input("Start Date", value=end_datetime.date() - datetime.timedelta(days=90), key="start_date")
-    start_time = st.sidebar.selectbox("Start Time", options=time_options, index=0, key="start_time")
-    start_datetime = datetime.datetime.combine(start_date, start_time)
-
-    # --- Strategy Selection ---
-    st.sidebar.header("Strategy Selection")
-    selected_strategy_name = st.sidebar.selectbox(
-        "Select Strategy",
-        options=list(STRATEGY_MAPPING.keys())
-    )
+def render_backtesting_ui(symbols_to_test, backtest_type, resolution, start_datetime, end_datetime, selected_strategy_name, run_optimization, strategy_params, optimization_params, trade_quantity, initial_cash):
+    """Renders the main panel UI for the backtesting dashboard."""
     strategy_class = STRATEGY_MAPPING[selected_strategy_name]
-
-    # --- Backtest Mode Selection ---
-    run_optimization = st.sidebar.checkbox("Enable Parameter Optimization")
-
-    strategy_params: dict[str, object] = {}
-    optimization_params: dict[str, object] = {}
-
-    if run_optimization:
-        st.sidebar.subheader("Optimization Ranges")
-        optimizable_params = strategy_class.get_optimizable_params()
-        for param in optimizable_params:
-            if param['type'] == 'slider':
-                optimization_params[param['name']] = st.sidebar.slider(param['label'], param['min'], param['max'], param['default'])
-                optimization_params[f"{param['name']}_step"] = st.sidebar.number_input(f"{param['name'].replace('_', ' ').title()} Step", 1, 10, param['step'])
-
-        run_button_label = "Run Optimization"
-    else:
-        st.sidebar.subheader(f"Parameters for {selected_strategy_name}")
-        # This part can also be made dynamic if strategies define their non-optimizable params
-        # For now, keeping it simple
-        strategy_params['short_window'] = st.sidebar.slider("Short Window", min_value=1, max_value=50, value=9)
-        strategy_params['long_window'] = st.sidebar.slider("Long Window", min_value=10, max_value=200, value=21)
-        run_button_label = "Run Backtest"
-
-    st.sidebar.subheader("Common Parameters")
-    trade_quantity = st.sidebar.slider("Trade Quantity", min_value=1, max_value=1000, value=100, key="common_trade_quantity")
-    initial_cash = st.sidebar.number_input("Initial Cash", min_value=1000.0, value=100000.0, step=1000.0)
-
+    
     # --- Main Content Area ---
     if run_optimization:
         st.header("Parameter Optimization")
     else:
         st.header("Backtest Results")
 
-    if st.sidebar.button(run_button_label):
+    if st.session_state.get('run_button_clicked', False):
         if not symbols_to_test:
             st.warning("Please select at least one symbol to run the backtest.")
         else:
@@ -384,11 +324,26 @@ def main():
 
                 else: # Run a single backtest
                     strategy_params['trade_quantity'] = trade_quantity
+                    
+                    # Ensure that for any intraday resolution, we also load daily data
+                    # which is required for strategies like OpeningPriceCrossover.
+                    other_resolutions = set()
+                    if resolution != "D":
+                        other_resolutions.add("D")
+
+                    # The OpeningPriceCrossoverStrategy specifically requires 1-minute data
+                    # for its implied crossover count calculation.
+                    if selected_strategy_name == "Opening Price Crossover":
+                        other_resolutions.add("1")
+
+                    # Construct the final list, ensuring the user-selected resolution is first.
+                    final_resolutions = [resolution] + list(other_resolutions)
+
                     engine = BacktestingEngine(
                         start_datetime=start_datetime, 
                         end_datetime=end_datetime, 
                         db_file=config.HISTORICAL_MARKET_DB_FILE, 
-                        resolution=resolution
+                        resolutions=final_resolutions
                     )
                     
                     portfolio_result, last_prices, backtest_log = run_and_capture_backtest(
@@ -402,37 +357,159 @@ def main():
                         st.subheader("Backtest Log")
                         st.code(backtest_log)
 
-    # --- Trading Activity Logs ---
-    st.header("Trading Activity Logs")
-    st.markdown("View logs from specific backtest runs or live trading sessions.")
+def render_live_monitor_ui(auto_refresh_interval):
+    """Renders the UI for monitoring live paper trading sessions."""
+    st.header("Live Paper Trading Monitor")
+    st.markdown("This section provides a view into the live trading sessions managed by `tick_collector.py`. The data on this tab will auto-refresh every 5 seconds.")
 
-    all_runs = get_all_run_ids()
-    if not all_runs:
-        st.info("No trading activity has been logged yet. Run a backtest or a live session to see logs here.")
+    # --- Live Tick Data Health Check ---
+    st.subheader("Live Tick Data Health Check")
+    st.markdown("Shows the last 10 ticks received by the live engine. This is the most direct way to confirm the system is collecting data.")
+    live_ticks_df = load_live_ticks()
+    if not live_ticks_df.empty:
+        st.dataframe(live_ticks_df)
+    else:
+        st.info("No data in the live ticks database. The `tick_collector.py` script might not be running or no ticks have been received yet.")
+
+    # --- Live Session Logs ---
+    st.subheader("Live Session Logs")
+    live_runs = [r for r in get_all_run_ids() if r.startswith('live_')]
+
+    if not live_runs:
+        st.info("No live trading sessions have been logged yet. Run `src/tick_collector.py` on your server to start a session.")
         return
 
-    selected_run_id = st.selectbox("Select a Run ID to inspect:", options=all_runs)
+    selected_run_id = st.selectbox("Select a Live Run ID to inspect:", options=live_runs, key="live_run_selector")
 
-    log_tab1, log_tab2 = st.tabs(["Portfolio Log", "Trade Log"])
+    st.subheader(f"Trade Log for Live Run: `{selected_run_id}`")
+    trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;"
+    trade_log_df = load_log_data(trade_log_query, params=(selected_run_id,))
+    if not trade_log_df.empty:
+        st.dataframe(trade_log_df)
+    else:
+        st.info("No trades were executed in this live session.")
 
-    with log_tab1:
-        st.subheader(f"Portfolio Log for Run: `{selected_run_id}`")
-        portfolio_log_query = "SELECT * FROM portfolio_log WHERE run_id = ? ORDER BY timestamp ASC;"
-        portfolio_log_df = load_log_data(portfolio_log_query, params=(selected_run_id,))
-        if not portfolio_log_df.empty:
-            st.line_chart(portfolio_log_df.set_index('timestamp')[['total_portfolio_value', 'cash', 'holdings_value']])
-            st.dataframe(portfolio_log_df.sort_values(by="timestamp", ascending=False))
+def main():
+    """Main function to run the Streamlit dashboard."""
+    st.set_page_config(layout="wide")
+    st.title("TraderBuddy Dashboard")
+
+    # --- Primary Mode Selector using a visually appealing option menu ---
+    with st.sidebar:
+        app_mode = option_menu(
+            menu_title="Main Menu",
+            options=["Backtesting", "Live Paper Trading Monitor"],
+            icons=['graph-up-arrow', 'broadcast-pin'], # Icons from https://icons.getbootstrap.com/
+            menu_icon="none", # Set to "none" to disable the menu icon
+            default_index=0,
+        )
+
+    # --- Conditional UI Rendering based on Mode ---
+    if app_mode == "Backtesting":
+        st.sidebar.header("Backtest Configuration")
+        # --- Backtesting Sidebar Controls ---
+        with st.sidebar.form(key='backtest_form'):
+            # Symbols selection
+            all_symbols = get_all_symbols()
+            default_symbols = ["NSE:SBIN-EQ", "NSE:RELIANCE-EQ", "NSE:HDFCBANK-EQ"]
+            pre_selected_symbols = [s for s in default_symbols if s in all_symbols]
+
+            symbols_to_test = st.multiselect(
+                "Select Symbols",
+                options=all_symbols,
+                default=pre_selected_symbols
+            )
+
+            # Backtest Type selection
+            backtest_type = st.radio(
+                "Backtest Type",
+                ('Positional', 'Intraday'),
+                index=0, # Default to Positional
+                help="**Positional**: Holds trades across multiple days until an exit signal. **Intraday**: All open positions are force-closed at the end of each day (15:14)."
+            )
+
+            # Resolution selection
+            resolutions = ["D", "60", "30", "15", "5", "1"]
+            resolution = st.selectbox("Select Resolution", options=resolutions, index=2) # Default to 15 min
+
+            # Generate time options for select boxes
+            time_options = get_market_time_options()
+
+            # Date Range selection
+            st.markdown("---")
+            st.markdown("##### End Date & Time")
+            end_date = st.date_input("End Date", value=datetime.date.today(), key="end_date")
+            end_time = st.selectbox("End Time", options=time_options, index=len(time_options) - 1, key="end_time")
+            end_datetime = datetime.datetime.combine(end_date, end_time)
+
+            st.markdown("##### Start Date & Time")
+            start_date = st.date_input("Start Date", value=end_datetime.date() - datetime.timedelta(days=90), key="start_date")
+            start_time = st.selectbox("Start Time", options=time_options, index=0, key="start_time")
+            start_datetime = datetime.datetime.combine(start_date, start_time)
+
+            # --- Strategy Selection ---
+            st.markdown("---")
+            selected_strategy_name = st.selectbox(
+                "Select Strategy",
+                options=list(STRATEGY_MAPPING.keys())
+            )
+            strategy_class = STRATEGY_MAPPING[selected_strategy_name]
+
+            # --- Backtest Mode Selection ---
+            run_optimization = st.checkbox("Enable Parameter Optimization")
+
+            strategy_params: dict[str, object] = {}
+            optimization_params: dict[str, object] = {}
+
+            if run_optimization:
+                st.subheader("Optimization Ranges")
+                optimizable_params = strategy_class.get_optimizable_params()
+                for param in optimizable_params:
+                    if param['type'] == 'slider':
+                        optimization_params[param['name']] = st.slider(param['label'], param['min'], param['max'], param['default'])
+                        optimization_params[f"{param['name']}_step"] = st.number_input(f"{param['name'].replace('_', ' ').title()} Step", 1, 10, param['step'])
+                run_button_label = "Run Optimization"
+            else:
+                st.subheader(f"Parameters for {selected_strategy_name}")
+                strategy_params['short_window'] = st.slider("Short Window", min_value=1, max_value=50, value=9)
+                strategy_params['long_window'] = st.slider("Long Window", min_value=10, max_value=200, value=21)
+                run_button_label = "Run Backtest"
+
+            st.subheader("Common Parameters")
+            trade_quantity = st.slider("Trade Quantity", min_value=1, max_value=1000, value=100, key="common_trade_quantity")
+            initial_cash = st.number_input("Initial Cash", min_value=1000.0, value=100000.0, step=1000.0)
+            
+            # The button that submits the form
+            run_button_clicked = st.form_submit_button(run_button_label, use_container_width=True)
+            if run_button_clicked:
+                st.session_state.run_button_clicked = True
+
+        # --- Main Panel Rendering ---
+        render_backtesting_ui(symbols_to_test, backtest_type, resolution, start_datetime, end_datetime, selected_strategy_name, run_optimization, strategy_params, optimization_params, trade_quantity, initial_cash)
+        
+        # --- Backtest Run Logs ---
+        st.header("Backtest Activity Logs")
+        st.markdown("View logs from specific backtest runs.")
+        backtest_runs = [r for r in get_all_run_ids() if not r.startswith('live_')]
+        if not backtest_runs:
+            st.info("No backtest activity has been logged yet. Run a backtest to see logs here.")
         else:
-            st.info("No portfolio log data available for this run. (Note: Backtests do not generate persistent portfolio logs; their equity curves are shown in the results above.)")
+            selected_run_id = st.selectbox("Select a Backtest Run ID to inspect:", options=backtest_runs, key="backtest_run_selector")
+            st.subheader(f"Trade Log for Run: `{selected_run_id}`")
+            trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;"
+            trade_log_df = load_log_data(trade_log_query, params=(selected_run_id,))
+            if not trade_log_df.empty:
+                st.dataframe(trade_log_df)
+            else:
+                st.info("No trades were executed in this backtest run.")
 
-    with log_tab2:
-        st.subheader(f"Trade Log for Run: `{selected_run_id}`")
-        trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;"
-        trade_log_df = load_log_data(trade_log_query, params=(selected_run_id,))
-        if not trade_log_df.empty:
-            st.dataframe(trade_log_df)
-        else:
-            st.info("No trades were executed in this run.")
+    elif app_mode == "Live Paper Trading Monitor":
+        st.sidebar.header("Live Monitor Configuration")
+        auto_refresh_interval = st.sidebar.slider("Auto-Refresh Interval (seconds)", min_value=5, max_value=60, value=5, key="refresh_interval")
+        st_autorefresh(interval=auto_refresh_interval * 1000, key="live_monitor_refresher")
+        
+        # --- Main Panel Rendering ---
+        render_live_monitor_ui(auto_refresh_interval)
 
 if __name__ == "__main__":
     main()

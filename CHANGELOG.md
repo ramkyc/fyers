@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-09-08
+
+### Added
+-   **Contextual Dashboard UI**: The main dashboard now features a contextual sidebar menu, showing relevant controls for either "Backtesting" or "Live Paper Trading Monitor" modes.
+-   **Live Monitor Auto-Refresh**: The Live Monitor tab now automatically refreshes, providing a near real-time view of system health and data collection.
+-   **Live Data Preparation**: A new daily script (`prepare_live_data.py`) and scheduler job now pre-populates the necessary bar history for strategies, ensuring the live engine starts "hot".
+-   **Live Trading Safety Switch**: Added a global `ENABLE_LIVE_TRADING` flag in `config.py` to prevent accidental placement of real orders. The system defaults to simulated paper trading.
+
+### Fixed
+-   **Live Data Engine**: Resolved a critical bug preventing the live engine from processing and storing ticks. The engine now reliably collects data, resamples it into 1-minute bars, and feeds it to the strategy.
+-   **Strategy Execution**: Fixed an issue where live strategies were not receiving the required historical data to generate signals. The engine now provides a rolling window of bar history.
+-   **BSE Option Symbols**: Corrected the symbol generation logic for SENSEX and BANKEX options to align with Fyers API documentation, resolving all subscription errors.
+
 ## [0.4.0] - 2025-09-05
 
 ### Added

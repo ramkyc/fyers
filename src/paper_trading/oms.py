@@ -71,7 +71,9 @@ class OrderManager:
         price = signal['price'] # This is the price at which the signal was generated
         timestamp = signal['timestamp']
 
-        if is_live_trading and self.fyers:
+        # --- Master Safety Check ---
+        # Only proceed with live trading if both the engine flag AND the global config flag are True.
+        if is_live_trading and self.fyers and config.ENABLE_LIVE_TRADING:
             # --- Live Order Placement --- #
             print(f"{timestamp} | Attempting to place LIVE {action} order for {quantity} {symbol}...")
             side = 1 if action == 'BUY' else -1

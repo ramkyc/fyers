@@ -24,8 +24,8 @@ def main():
                         help="Start date for the backtest in YYYY-MM-DD format.")
     parser.add_argument("--end", type=str, required=True,
                         help="End date for the backtest in YYYY-MM-DD format.")
-    parser.add_argument("--resolution", type=str, default="D",
-                        help="Data resolution (e.g., 'D', '60', '15'). Defaults to 'D'.")
+    parser.add_argument("--resolutions", nargs='+', type=str, default=["D"],
+                        help="Data resolutions (e.g., 'D', '60', '15'). Defaults to 'D'.")
     parser.add_argument("--cash", type=float, default=100000.0,
                         help="Initial cash for the portfolio.")
 
@@ -42,7 +42,7 @@ def main():
         start_datetime=start_dt,
         end_datetime=end_dt,
         db_file=config.HISTORICAL_MARKET_DB_FILE,
-        resolution=args.resolution
+        resolutions=args.resolutions
     )
 
     # --- Strategy Execution ---

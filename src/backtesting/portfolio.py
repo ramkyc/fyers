@@ -96,7 +96,10 @@ class BacktestPortfolio:
         unrealized_pnl = 0.0
         
         for symbol, data in self.positions.items():
-            current_price = current_prices.get(symbol, data['avg_price'])
+            # Use the current price if available, otherwise fall back to the position's average price.
+            # This prevents errors if a tick is missing for a symbol we hold.
+            current_price = current_prices.get(symbol) or data['avg_price']
+
             market_value = data['quantity'] * current_price
             holdings_value += market_value
             unrealized_pnl += market_value - (data['quantity'] * data['avg_price'])
@@ -115,4 +118,3 @@ class BacktestPortfolio:
             "unrealized_pnl": unrealized_pnl,
             "total_trades": len(self.trades)
         }
-
