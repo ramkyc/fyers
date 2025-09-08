@@ -40,10 +40,6 @@ class SMACrossoverStrategy(BaseStrategy):
         self.long_window: int = safe_int(self.params.get('long_window', 20), 20)
         self.trade_quantity: int = safe_int(self.params.get('trade_quantity', 10), 10)
         self.primary_resolution = resolutions[0] if resolutions else "D" # Default primary resolution for this strategy
-        
-        # Data will be managed by the backtesting engine's historical dataframes
-        # This ensures that on each `on_data` call, we have the full history available.
-        self.data: 'defaultdict[str, pd.DataFrame]' = defaultdict(pd.DataFrame)
         self.short_sma: 'defaultdict[str, pd.Series]' = defaultdict(pd.Series)
         self.long_sma: 'defaultdict[str, pd.Series]' = defaultdict(pd.Series)
 
@@ -86,22 +82,23 @@ class SMACrossoverStrategy(BaseStrategy):
             if symbol not in data:
                 continue
 
-            # Append new data to our internal dataframe for this symbol
-            new_data_point = data[symbol]
-            new_row = pd.DataFrame([new_data_point], index=[timestamp])
-            self.data[symbol] = pd.concat([self.data[symbol], new_row])
-            
-            df = self.data[symbol]
-            ltp = new_data_point.get('close')
+            # The engine now provides the full, managed bar history directly.
+            # We convert it to a DataFrame for easy calculation.
+            bar_history_list = data[symbol]
+            if len(bar_history_list) < self.long_window:
+                continue # Not enough data to calculate the long-term SMA
 
-            if len(df) < self.long_window:
-                continue
+            df = pd.DataFrame(bar_history_list)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.set_index('timestamp')
+
+            ltp = df['close'].iloc[-1]
 
             # --- Calculate SMAs using the full history in the DataFrame ---
             self.short_sma[symbol] = df['close'].rolling(window=self.short_window).mean()
             self.long_sma[symbol] = df['close'].rolling(window=self.long_window).mean()
 
-            # Ensure we have enough data points to have valid SMA values
+            # Ensure we have at least two data points to check for a crossover
             if len(self.short_sma[symbol]) < 2 or len(self.long_sma[symbol]) < 2:
                 continue # Not enough data for a crossover signal yet
 

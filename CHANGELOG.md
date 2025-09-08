@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+-   **Refactored `tick_collector.py`**: Converted the scheduler script from a procedural design with global variables to a more robust and maintainable class-based `TradingScheduler`.
+
 ## [0.5.0] - 2025-09-08
 
 ### Added
