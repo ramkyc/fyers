@@ -5,6 +5,10 @@ __pycache__/
 *.pyd
 .Python
 
+# .bmad-core/ is a directory created by the BMad Method tool
+.bmad-core/
+.python-version
+
 # Environments
 .env
 venv/
@@ -35,4 +39,4 @@ logs/
 .pytest_cache/
 
 # Data files
-data/*
+data/*.sqlite
