@@ -7,7 +7,7 @@ import datetime
 from src.live_config_manager import save_config, load_config, get_engine_status, start_engine, stop_engine
 from src.strategies import STRATEGY_MAPPING
 from src.market_calendar import is_market_working_day, NSE_MARKET_OPEN_TIME, NSE_MARKET_CLOSE_TIME
-from web_ui.utils import get_live_tradeable_symbols, get_all_run_ids, load_live_portfolio_log, load_log_data
+from web_ui.utils import get_live_tradeable_symbols, get_all_run_ids, load_live_portfolio_log, load_log_data, analyze_live_run
 
 def render_page():
     """Renders the entire Live Paper Trading Monitor page."""
@@ -106,9 +106,24 @@ def render_page():
     st.subheader("Live Session Logs")
     live_runs = [r for r in get_all_run_ids() if r.startswith('live_')]
     if live_runs:
-        selected_run_id = st.selectbox("Select a Live Run ID to inspect:", options=live_runs, key="live_run_selector")
+        selected_run_id = st.selectbox("Select a Live Session to Analyze:", options=live_runs, key="live_run_selector")
+        
+        # --- Performance Summary for Selected Live Run ---
+        with st.spinner("Analyzing live session performance..."):
+            live_metrics = analyze_live_run(selected_run_id)
+        
+        if live_metrics:
+            st.subheader("Performance Summary")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Total P&L", f"₹{live_metrics['total_pnl']:,.2f}", f"{live_metrics['total_pnl'] / (live_metrics['initial_cash'] or 1):.2%}")
+            col2.metric("Max Drawdown", f"{live_metrics['max_drawdown'] * 100:.2f}%")
+            col3.metric("Sharpe Ratio", f"{live_metrics['sharpe_ratio']:.2f}")
+            col4.metric("Win Rate", f"{live_metrics['win_rate']:.2%}")
+            col5.metric("Profit Factor", f"{live_metrics['profit_factor']:.2f}")
+        
+        st.subheader(f"Trade Log for Run: `{selected_run_id}`")
         trade_log_df = load_log_data("SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;", params=(selected_run_id,))
-        st.dataframe(trade_log_df)
+        st.dataframe(trade_log_df, use_container_width=True)
 
     # --- Auto-refreshing logic ---
     is_market_open_now = is_market_working_day(datetime.date.today()) and NSE_MARKET_OPEN_TIME <= datetime.datetime.now().time() <= NSE_MARKET_CLOSE_TIME

@@ -10,6 +10,8 @@ import json
 import config
 from src.strategies import STRATEGY_MAPPING
 
+from src.reporting.performance_analyzer import PerformanceAnalyzer
+from src.paper_trading.portfolio import Portfolio
 # This function must be defined at the top level to be pickleable by multiprocessing
 def run_backtest_for_worker(args):
     """
@@ -125,3 +127,34 @@ def get_live_tradeable_symbols():
     except Exception as e:
         st.error(f"Error reading live symbols file: {e}")
         return []
+
+def analyze_live_run(run_id: str):
+    """
+    Loads the data for a completed live run and calculates performance metrics.
+    """
+    if not run_id:
+        return None
+
+    # 1. Load the trade log for the selected run
+    trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp ASC;"
+    trade_log_df = load_log_data(trade_log_query, params=(run_id,))
+    if trade_log_df.empty:
+        return None # No trades, no performance to analyze
+
+    # 2. Load the equity curve for the selected run
+    portfolio_log_df = load_live_portfolio_log(run_id)
+    if portfolio_log_df.empty:
+        return None # No equity curve, can't calculate drawdown/sharpe
+
+    # 3. Create a mock portfolio object to hold the data for the analyzer
+    mock_portfolio = Portfolio(initial_cash=200000.0, enable_logging=False)
+    mock_portfolio.trades = trade_log_df.to_dict('records')
+    mock_portfolio.equity_curve = portfolio_log_df.to_dict('records')
+    mock_portfolio.initial_cash = portfolio_log_df['value'].iloc[0]
+
+    # 4. Determine last prices for unrealized P&L calculation
+    last_prices = trade_log_df.groupby('symbol')['price'].last().to_dict()
+
+    # 5. Analyze and return metrics
+    analyzer = PerformanceAnalyzer(mock_portfolio)
+    return analyzer.calculate_metrics(last_prices)

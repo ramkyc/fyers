@@ -3,7 +3,6 @@
 import sqlite3
 import pandas as pd
 import numpy as np
-import uuid
 import datetime
 from collections import defaultdict
 
@@ -105,7 +104,15 @@ class BacktestingEngine:
         primary_resolution_data = all_loaded_data[self.primary_resolution]
 
         # Generate a unique ID for this backtest run to isolate its logs
-        run_id = str(uuid.uuid4())
+        timestamp_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        strategy_name_short = strategy_class.__name__.replace("Strategy", "")
+        # Limit symbols in the name to avoid excessively long run_ids
+        symbols_str = "-".join(s.replace("NSE:", "").replace("-EQ", "") for s in symbols[:2])
+        if len(symbols) > 2:
+            symbols_str += f"_{len(symbols)-2}more"
+        
+        # Construct the new human-readable run_id
+        run_id = f"bt_{timestamp_str}_{strategy_name_short}_{symbols_str}"
         print(f"Backtest Run ID: {run_id}")
 
         # 2. Initialize the portfolio and OrderManager

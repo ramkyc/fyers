@@ -49,14 +49,12 @@ cd fyers
 
 ### Step 2: Create and Activate a Virtual Environment
 
-It's highly recommended to use a virtual environment to manage project dependencies.
+This project uses [Poetry](https://python-poetry.org/) to manage dependencies and the virtual environment.
 
 ```bash
-# Create the virtual environment
-python3 -m venv fyers-env
-
-# Activate it (on macOS/Linux)
-source fyers-env/bin/activate
+# Activate the virtual environment managed by Poetry
+# All subsequent commands should be run inside this shell.
+poetry shell
 ```
 
 ### Step 3: Install Dependencies
