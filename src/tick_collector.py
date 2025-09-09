@@ -77,7 +77,7 @@ class TradingScheduler:
                 fyers_model=fyers_model,
                 app_id=config.APP_ID,
                 access_token=raw_access_token,
-                strategy=strategy,
+                strategies=[strategy], # Pass as a list with one item
                 initial_cash=200000.0
             )
 
@@ -126,10 +126,6 @@ class TradingScheduler:
         """
         The main loop for the scheduler.
         """
-        # --- PID File Management ---
-        with open(self.pid_file, 'w') as f:
-            f.write(str(os.getpid()))
-        print(f"Scheduler started with PID {os.getpid()}. PID file created at {self.pid_file}")
 
         print("Starting Trading Engine Scheduler...")
         now = datetime.datetime.now()

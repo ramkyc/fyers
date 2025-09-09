@@ -38,7 +38,7 @@ class SMACrossoverStrategy(BaseStrategy):
                 return default
         self.short_window: int = safe_int(self.params.get('short_window', 5), 5)
         self.long_window: int = safe_int(self.params.get('long_window', 20), 20)
-        self.trade_quantity: int = safe_int(self.params.get('trade_quantity', 10), 10)        
+        self.trade_value: float = float(self.params.get('trade_value', 25000.0))
         # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
         # If resolutions is None, it implies a live trading context.
         self.primary_resolution = resolutions[0] if resolutions else "1"
@@ -183,7 +183,10 @@ class SMACrossoverStrategy(BaseStrategy):
 
                 # Bullish Crossover
                 if short_sma > long_sma and prev_short_sma <= prev_long_sma and not position:
-                    self.buy(symbol, self.trade_quantity, ltp, timestamp, is_live_trading)
+                    if ltp > 0:
+                        quantity_to_buy = int(self.trade_value / ltp)
+                        if quantity_to_buy > 0:
+                            self.buy(symbol, quantity_to_buy, ltp, timestamp, is_live_trading)
 
                 # Bearish Crossover
                 elif short_sma < long_sma and prev_short_sma >= prev_long_sma and position and position['quantity'] > 0:

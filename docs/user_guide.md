@@ -205,7 +205,7 @@ The platform is designed to be easily extensible. To add your own trading strate
 2.  **Inherit from `BaseStrategy`**: Your strategy class must inherit from `src/strategies/base_strategy.py`.
 3.  **Implement Core Methods**:
     -   `generate_signals(self, data)`: This method is for **backtesting**. It should contain vectorized logic (using pandas) to generate buy/sell signals across the entire historical dataset at once.
-    -   `on_data(self, timestamp, data, is_live_trading)`: This method is for **live trading**. It is called for every incoming live tick.
+    -   `on_data(self, timestamp, market_data_all_resolutions, **kwargs)`: This is the primary method for both **backtesting and live trading**. It is called for each new data point (a historical bar in a backtest, or a newly completed bar in a live session). The `is_live_trading` flag within `kwargs` allows you to add context-specific logic if needed.
 4.  **Register in Dashboard**: Open `web_ui/dashboard.py` and add your new strategy class to the `STRATEGY_MAPPING` dictionary. This will make it available in the strategy dropdown in the UI.
 
 ```python

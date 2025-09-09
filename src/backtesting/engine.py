@@ -34,6 +34,7 @@ class BacktestingEngine:
         self.resolutions = resolutions if resolutions is not None else ["D"]
         self.primary_resolution = self.resolutions[0] # The first resolution is considered primary for iteration
         self.all_loaded_data = {}
+        self.bar_history = defaultdict(lambda: defaultdict(list)) # To maintain rolling history for strategies
         # Connect in read-only mode to prevent locking issues with other processes (like data fetchers).
         db_uri = f'file:{self.db_file}?mode=ro'
         self.con = sqlite3.connect(db_uri, uri=True)
@@ -150,11 +151,19 @@ class BacktestingEngine:
                         timestamps_in_df = res_data_df.index.get_level_values('timestamp')
                         
                         # For 1-min data, we need all bars within the primary candle's interval.
-                        # For other secondary data (like 'D'), we just need the latest one.
-                        if res == '1' and self.primary_resolution != 'D':
-                            primary_interval_seconds = pd.to_timedelta(f'{self.primary_resolution}min').total_seconds()
-                            start_of_bar_ns = timestamp_ns - primary_interval_seconds
-                            relevant_data = res_data_df.loc[(timestamps_in_df >= start_of_bar_ns) & (timestamps_in_df <= timestamp_ns)]
+                        # For other secondary data (like 'D'), we just need the latest one up to the current timestamp.
+                        if self.primary_resolution == 'D' and res == '1':
+                            # When primary is Daily, get all 1-min bars for that entire day.
+                            day_start_ns = timestamp_ns
+                            day_end_ns = timestamp_ns + (24 * 60 * 60) # Start of next day
+                            relevant_data = res_data_df.loc[(timestamps_in_df >= day_start_ns) & (timestamps_in_df < day_end_ns)]
+                        elif res == '1' and self.primary_resolution != 'D':
+                            try:
+                                primary_interval_seconds = pd.to_timedelta(f'{self.primary_resolution}min').total_seconds()
+                                start_of_bar_ns = timestamp_ns - primary_interval_seconds
+                                relevant_data = res_data_df.loc[(timestamps_in_df >= start_of_bar_ns) & (timestamps_in_df <= timestamp_ns)]
+                            except ValueError: # Handle cases where resolution is not a number (e.g., 'D')
+                                relevant_data = pd.DataFrame()
                         else:
                             # This is crucial for getting daily data during an intraday loop.
                             relevant_data = res_data_df.loc[timestamps_in_df <= timestamp_ns]
@@ -163,30 +172,28 @@ class BacktestingEngine:
                             # Group by symbol and get the last entry for each
                             res_group = relevant_data if res == '1' else relevant_data.groupby('symbol').tail(1)
 
+                # Simplified and corrected data preparation
                 if not res_group.empty:
-                    # Special handling for 1-minute data to create a nested dictionary of {symbol: {timestamp: {OHLCV}}}
-                    # This is required by strategies like OpeningPriceCrossover.
-                    if res == '1':
-                        res_dict = defaultdict(dict)
+                    if res == self.primary_resolution:
+                        # For the primary resolution, build and pass the full history list
                         for row in res_group.itertuples(index=True, name='Pandas'):
-                            # The index contains timestamp (in seconds) and symbol
-                            ts = pd.to_datetime(row.Index[0], unit='s') 
                             symbol = row.Index[1]
-                            res_dict[symbol][ts] = {
-                                'open': row.open, 'high': row.high, 'low': row.low,
-                                'close': row.close, 'volume': row.volume
-                            }
-                        current_market_data_all_resolutions[res] = res_dict
+                            bar_data = {'timestamp': timestamp, 'open': row.open, 'high': row.high, 'low': row.low, 'close': row.close, 'volume': row.volume, 'resolution': res}
+                            self.bar_history[res][symbol].append(bar_data)
+                        current_market_data_all_resolutions[res] = dict(self.bar_history[res])
                     else:
-                        # Standard format for primary and other secondary resolutions (like 'D'): {symbol: {OHLCV}}
-                        current_market_data_all_resolutions[res] = {
-                            row.Index[1]: { # Extract symbol from MultiIndex
-                                'open': row.open, 'high': row.high, 'low': row.low,
-                                'close': row.close, 'volume': row.volume
-                            } for row in res_group.itertuples(index=True, name='Pandas')
-                        }
-                else:
-                    current_market_data_all_resolutions[res] = {}
+                        # For secondary resolutions, prepare the data.
+                        # For 1-min data, it should be a list of bars.
+                        # For other resolutions (like 'D'), it should be a single bar dict.
+                        data_for_res = defaultdict(list)
+                        for row in res_group.itertuples(index=True, name='Pandas'):
+                            symbol = row.Index[1]
+                            bar_data = {'open': row.open, 'high': row.high, 'low': row.low, 'close': row.close, 'volume': row.volume}
+                            data_for_res[symbol].append(bar_data)
+                        
+                        # If it's not 1-min data, we only want the single latest bar, not a list.
+                        current_market_data_all_resolutions[res] = {k: (v if res == '1' else v[0]) for k, v in data_for_res.items()}
+                current_market_data_all_resolutions.setdefault(res, {})
 
             # --- Rule: Time-Windowed Entries ---
             if self.start_datetime.time() <= timestamp.time() <= self.end_datetime.time():
@@ -196,15 +203,26 @@ class BacktestingEngine:
             if backtest_type == 'Intraday' and timestamp.time() >= intraday_exit_time:
                 for symbol, position_data in list(portfolio.positions.items()):
                     if symbol not in intraday_positions_closed_today:
-                        print(f"{timestamp} | INTRADAY EXIT: Force-closing position in {symbol}.")
+                        # Correctly get the last close price for the symbol
+                        last_bar_for_symbol = self.bar_history[self.primary_resolution].get(symbol, [])
+                        close_price = last_bar_for_symbol[-1].get('close') if last_bar_for_symbol else position_data['avg_price']
+
+                        print(f"{timestamp} | INTRADAY EXIT: Force-closing position in {symbol} at {close_price:.2f}.")
                         oms.execute_order({
                             'symbol': symbol, 'action': 'SELL', 'quantity': position_data['quantity'],
-                            'price': current_market_data_all_resolutions[self.primary_resolution].get(symbol, {}).get('close', position_data['avg_price']),
+                            'price': close_price,
                             'timestamp': timestamp
                         }, is_live_trading=False)
                         intraday_positions_closed_today.add(symbol)
 
-            all_prices_at_timestamp = {symbol: data.get(symbol, {}).get('close') for res, data in current_market_data_all_resolutions.items() for symbol in data}
+            # Correctly extract the last close price for each symbol from the bar history
+            all_prices_at_timestamp = {}
+            for res, data_by_symbol in current_market_data_all_resolutions.items():
+                for symbol, data in data_by_symbol.items():
+                    if isinstance(data, list) and data: # Primary resolution sends a list
+                        all_prices_at_timestamp[symbol] = data[-1].get('close')
+                    elif isinstance(data, dict): # Secondary resolutions send a single dict
+                        all_prices_at_timestamp[symbol] = data.get('close')
             portfolio.log_portfolio_value(timestamp, all_prices_at_timestamp)
         
 

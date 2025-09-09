@@ -6,6 +6,7 @@ import json
 import os
 import datetime
 import pandas as pd
+from collections import defaultdict
 import sqlite3
 import config # config.py is now in the project root
 
@@ -15,9 +16,9 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
     
     It connects the portfolio, order manager, and strategy, and processes
     incoming live ticks from Fyers WebSocket to simulate trading.
-    It also stores live tick data for historical analysis.
+    It also stores live tick data for historical analysis. It can manage and execute multiple strategies concurrently on a single portfolio.
     """
-    def __init__(self, fyers_model, app_id, access_token: str, strategy: BaseStrategy, initial_cash=100000.0):
+    def __init__(self, fyers_model, app_id, access_token: str, strategies: list[BaseStrategy], initial_cash=200000.0):
         """
         Initializes the LiveTradingEngine.
 
@@ -25,7 +26,7 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
             fyers_model: An authenticated fyersModel instance for REST API calls.
             app_id (str): The Fyers APP_ID for WebSocket connection.
             access_token (str): The raw Fyers access token.
-            strategy (BaseStrategy): An instance of a trading strategy.
+            strategies (list[BaseStrategy]): A list of instantiated trading strategies.
             initial_cash (float): The starting cash for the portfolio.
         """
         formatted_token = f"{app_id}:{access_token}"
@@ -52,15 +53,22 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
         self.oms = OrderManager(self.portfolio, run_id=self.run_id, fyers=self.fyers)
 
         # --- Critical Linkage ---
-        # The strategy needs a reference to the portfolio and OMS created by the engine.
-        self.strategy = strategy
-        self.strategy.portfolio = self.portfolio
-        self.strategy.order_manager = self.oms
+        # Each strategy needs a reference to the shared portfolio and OMS.
+        self.strategies = strategies
+        for strategy in self.strategies:
+            strategy.portfolio = self.portfolio
+            strategy.order_manager = self.oms
+
         self.last_known_prices = {} # To store the last price of each symbol
         self.tick_counter = 0 # Counter for batch committing
         self.incomplete_bars = {} # For resampling ticks into bars. Key: symbol, Value: OHLC dict
         self.bar_history = {} # For maintaining a rolling history of completed bars for the strategy
         self.symbols_to_subscribe = []
+
+        # --- State for Live Crossover Counting ---
+        self.live_daily_open = {}
+        self.live_crossover_counts = defaultdict(int)
+        self.last_tick_price = {}
 
         print("Live Trading Engine initialized.")
 
@@ -99,13 +107,27 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
                     timestamp = datetime.datetime.fromtimestamp(timestamp_epoch)
                     self.last_known_prices[symbol] = ltp
                     
+                    # --- Live Crossover Counting Logic ---
+                    # 1. Set the daily open on the first tick of the day
+                    if symbol not in self.live_daily_open:
+                        self.live_daily_open[symbol] = ltp
+                        self.last_tick_price[symbol] = ltp
+
+                    # 2. Check for an upward crossover
+                    # A crossover happens if the previous price was below the open and the current price is at or above it.
+                    if self.last_tick_price.get(symbol, ltp) < self.live_daily_open.get(symbol, ltp) and ltp >= self.live_daily_open.get(symbol, ltp):
+                        self.live_crossover_counts[symbol] += 1
+
+                    # 3. Update the last known price for the next tick
+                    self.last_tick_price[symbol] = ltp
+
                     # Store live tick data in SQLite
                     # NOTE: Connection must be created and used in the same thread.
                     try:
                         with sqlite3.connect(database=config.LIVE_MARKET_DB_FILE) as con:
                             con.execute(
                                 "INSERT OR IGNORE INTO live_ticks (timestamp, symbol, ltp, volume) VALUES (?, ?, ?, ?)",
-                                (timestamp, symbol, ltp, volume)
+                                (timestamp.isoformat(), symbol, ltp, volume)
                             )
                             self.tick_counter += 1
                             # Commit is handled by the 'with' statement on exit.
@@ -158,7 +180,7 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
                     """,
                     (
                         self.run_id,
-                        timestamp,
+                        timestamp.isoformat(),
                         summary['total_portfolio_value'],
                         summary['final_cash'],
                         summary['holdings_value']
@@ -192,7 +214,11 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
                 
                 # Keep the history to a reasonable length (e.g., long_window + buffer)
                 # This prevents memory from growing indefinitely.
-                max_history_len = self.strategy.params.get('long_window', 21) + 50
+                # Find the maximum lookback period required by any of the strategies.
+                max_lookback = 0
+                for strategy in self.strategies:
+                    max_lookback = max(max_lookback, strategy.params.get('long_window', 0), strategy.params.get('ema_slow', 0))
+                max_history_len = max(max_lookback, 21) + 50 # Use a safe default if no lookback param is found
                 if len(self.bar_history[s]) > max_history_len:
                     self.bar_history[s].pop(0)
 
@@ -201,10 +227,23 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
                 
                 # Execute strategy with the completed bar
                 try:
-                    self.strategy.on_data(completed_bar['timestamp'], market_data_for_strategy, is_live_trading=True)
+                    # Loop through all strategies and pass the data to each one.
+                    # Each strategy will decide independently if it wants to act on the data.
+                    for strategy in self.strategies:
+                        # Pass the live crossover count to the strategy
+                        strategy.on_data(
+                            completed_bar['timestamp'], 
+                            market_data_for_strategy, 
+                            is_live_trading=True, 
+                            live_crossover_count=self.live_crossover_counts.get(s, 0))
+
                 except Exception as e:
-                    print(f"Error executing strategy.on_data for {s}: {e}")
+                    print(f"Error executing strategies on bar for {s}: {e}")
                 
+                # Reset the crossover count for the symbol now that the bar is complete and all strategies have seen it.
+                if s in self.live_crossover_counts:
+                    self.live_crossover_counts[s] = 0
+
                 # --- Log Portfolio Value After Strategy Execution ---
                 self._log_live_portfolio_value(completed_bar['timestamp'])
 
@@ -293,10 +332,11 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
             # We wrap the single 'bar' dictionary in a list to match the expected data structure.
             market_data_for_strategy = {'1': {s: [bar]}}
             try:
-                # Use the bar's start time for the event
-                self.strategy.on_data(bar['timestamp'], market_data_for_strategy, is_live_trading=True)
+                # On shutdown, pass the final bar to all strategies
+                for strategy in self.strategies:
+                    strategy.on_data(bar['timestamp'], market_data_for_strategy, is_live_trading=True)
             except Exception as e:
-                print(f"Error executing strategy on final bar for {s}: {e}")
+                print(f"Error executing strategies on final bar for {s}: {e}")
         self.incomplete_bars.clear()
 
         # --- Final Commit ---

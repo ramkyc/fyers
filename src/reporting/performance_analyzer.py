@@ -97,7 +97,9 @@ class PerformanceAnalyzer:
         equity_df = equity_df.set_index('timestamp')
 
         # Resample to daily returns to standardize
-        daily_returns = equity_df['value'].resample('D').last().pct_change().dropna()
+        # Forward-fill to handle non-trading days (weekends, holidays) before calculating returns
+        daily_series = equity_df['value'].resample('D').last().ffill()
+        daily_returns = daily_series.pct_change().dropna()
 
         if daily_returns.empty or daily_returns.std() == 0:
             return 0.0

@@ -28,14 +28,16 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.rr_ratio_target1 = self.params.get('rr1', 1.0)
         self.rr_ratio_target2 = self.params.get('rr2', 3.0)
         self.exit_percent_target1 = self.params.get('exit_pct1', 0.7) # 70%
-        self.resolutions = resolutions if resolutions is not None else ["D"]
-        # The primary resolution is the one the backtest engine iterates over.
-        # The strategy needs to know this to correctly process data.
-        self.primary_resolution = self.resolutions[0] if self.resolutions else "D"
+        self.trade_value: float = float(self.params.get('trade_value', 25000.0))
+        # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
+        # If resolutions is None, it implies a live trading context.
+        self.primary_resolution = resolutions[0] if resolutions else "1"
 
         # In-memory state for the strategy
-        self.data = {symbol: pd.DataFrame() for symbol in self.symbols}
         self.active_trades = {symbol: None for symbol in self.symbols}
+        # State for live trading to track daily open
+        self.daily_open_prices = {symbol: None for symbol in self.symbols}
+        self.last_processed_day = {symbol: None for symbol in self.symbols}
         self.implied_crossover_history: 'defaultdict[str, deque[float]]' = defaultdict(deque)
         self.debug_log = []
 
@@ -60,24 +62,32 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         Called for each new data bar.
         """
         is_live = kwargs.get('is_live_trading', False)
+        live_crossover_count = kwargs.get('live_crossover_count', 0)
 
         # Extract data for the primary resolution
-        market_data = market_data_all_resolutions.get(self.primary_resolution, {}) # This is now the intraday data
+        market_data = market_data_all_resolutions.get(self.primary_resolution, {})
 
         for symbol in self.symbols:
             if symbol not in market_data:
                 continue
 
-            # Append new data
-            new_data = market_data[symbol]
-            new_row = pd.DataFrame([new_data], index=[timestamp])
-            self.data[symbol] = pd.concat([self.data[symbol], new_row])
-            df = self.data[symbol]
+            bar_history_list = market_data[symbol]
+            df = pd.DataFrame(bar_history_list)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.set_index('timestamp')
 
-            # --- Get Daily Data for EMA Filter ---
-            # We need the daily data for the EMA trend filter.
-            daily_data = market_data_all_resolutions.get("D", {})
-            daily_open_price = daily_data.get(symbol, {}).get('open', 0)
+            # --- Daily Open Price Management (for Live Trading) ---
+            current_day = timestamp.date()
+            if self.last_processed_day.get(symbol) != current_day:
+                self.daily_open_prices[symbol] = df['open'].iloc[-1]
+                self.last_processed_day[symbol] = current_day
+            
+            daily_open_price = self.daily_open_prices.get(symbol)
+            
+            # For backtesting, we can get it directly if provided
+            if not is_live and "D" in market_data_all_resolutions:
+                daily_data = market_data_all_resolutions.get("D", {}).get(symbol, {})
+                daily_open_price = daily_data.get('open', daily_open_price) # Fallback to tracked price
 
             # Ensure we have enough data to calculate indicators
             if len(df) < self.ema_slow_period or daily_open_price == 0:
@@ -130,17 +140,21 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 is_ema_bullish = ema_fast > ema_slow
                 is_price_bullish = latest['close'] > latest['open']
 
-                # Calculate implied crossover count
-                implied_crossover_count = self._calculate_implied_crossover_count(symbol, timestamp, daily_open_price, market_data_all_resolutions)
+                # Use the accurate live count if available, otherwise use the backtest's implied count.
+                crossover_count = 0
+                if is_live:
+                    crossover_count = live_crossover_count
+                else:
+                    crossover_count = self._calculate_implied_crossover_count(symbol, timestamp, daily_open_price, market_data_all_resolutions)
 
                 # Store and calculate average implied crossover count
-                self.implied_crossover_history[symbol].append(implied_crossover_count)
+                self.implied_crossover_history[symbol].append(crossover_count)
                 if len(self.implied_crossover_history[symbol]) > 10:
                     self.implied_crossover_history[symbol].popleft()
                 
                 average_implied_crossover_count = sum(self.implied_crossover_history[symbol]) / len(self.implied_crossover_history[symbol]) if self.implied_crossover_history[symbol] else 0
 
-                if is_ema_bullish and is_price_bullish and implied_crossover_count > average_implied_crossover_count:
+                if is_ema_bullish and is_price_bullish and crossover_count > average_implied_crossover_count:
                     entry_price = latest['close']
                     stop_loss = min(latest['low'], previous['low'])
                     risk_per_share = entry_price - stop_loss
@@ -150,20 +164,20 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                     target1 = entry_price + (risk_per_share * self.rr_ratio_target1)
                     target2 = entry_price + (risk_per_share * self.rr_ratio_target2)
                     
-                    # Simple quantity calculation
-                    cash_per_symbol = self.portfolio.initial_cash / len(self.symbols)
-                    quantity = int(cash_per_symbol / entry_price)
+                    # Dynamic quantity calculation based on trade value
+                    if entry_price > 0:
+                        quantity = int(self.trade_value / entry_price)
 
-                    if quantity > 0:
-                        self._log_debug(f"{timestamp} | {symbol} | ENTRY: Buying {quantity} shares at {entry_price:.2f}")
-                        self.buy(symbol, quantity, entry_price, timestamp, is_live)
-                        self.active_trades[symbol] = {
-                            'stop_loss': stop_loss,
-                            'target1': target1,
-                            'target2': target2,
-                            'initial_quantity': quantity,
-                            't1_hit': False
-                        }
+                        if quantity > 0:
+                            self._log_debug(f"{timestamp} | {symbol} | ENTRY: Buying {quantity} shares at {entry_price:.2f}")
+                            self.buy(symbol, quantity, entry_price, timestamp, is_live)
+                            self.active_trades[symbol] = {
+                                'stop_loss': stop_loss,
+                                'target1': target1,
+                                'target2': target2,
+                                'initial_quantity': quantity,
+                                't1_hit': False
+                            }
 
     def _calculate_implied_crossover_count(self, symbol: str, primary_timestamp: datetime.datetime, primary_open_price: float, market_data_all_resolutions: dict) -> int:
         """
@@ -183,10 +197,10 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         
         crossover_count = 0
         # The engine now provides a dictionary of {timestamp: data} for the 1-min resolution
-        # within the primary candle's timeframe.
-        for ts, data in symbol_1min_data.items():
+        # within the primary candle's timeframe. The data is a list of bar dicts.
+        for bar_data in symbol_1min_data:
             # Check if the 1-min high crossed above the primary candle's open
-            if data['high'] > primary_open_price:
+            if bar_data['high'] > primary_open_price:
                 crossover_count += 1
         
         return crossover_count

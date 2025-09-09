@@ -69,6 +69,12 @@ def start_engine():
         script_path = os.path.join(project_root, 'src', 'tick_collector.py')
         command = [sys.executable, script_path]
         process = subprocess.Popen(command, cwd=project_root)
+        
+        # The dashboard process (which calls this function) is now responsible
+        # for creating the PID file immediately.
+        with open(PID_FILE, 'w') as f:
+            f.write(str(process.pid))
+
         return True, f"Engine started successfully with PID: {process.pid}"
     except Exception as e:
         return False, f"Failed to start engine: {e}"
