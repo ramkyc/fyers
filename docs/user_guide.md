@@ -11,6 +11,10 @@ TraderBuddy is a comprehensive trading platform that interfaces with the Fyers A
 -   **Strategy Development**: Provide a flexible framework for creating and plugging in new trading strategies.
 -   **Analysis & Visualization**: Offer a web-based dashboard (Streamlit) for running backtests, optimizing parameters, and reviewing performance.
 
+### Architectural Note: Separation of Concerns
+
+The Backtesting and Live Trading systems are designed to be completely independent. You can run backtests and analyze results on the dashboard at any time, regardless of whether the market is open or the live trading engine is running. The "Live Paper Trading Monitor" is simply a control panel and window into the separate, scheduled `tick_collector.py` process.
+
 ## 2. Prerequisites
 ## 2. Understanding the Environments
 
@@ -170,7 +174,7 @@ Once the `tick_collector.py` script is running on your EC2 instance, you can mon
 
 1.  **Check if the Process is Running**:
     Log in to your EC2 instance via SSH and use this command to see if the script is an active process.
-    ```bash
+    ```sh
     ps aux | grep tick_collector.py
     ```
 
@@ -181,12 +185,12 @@ Once the `tick_collector.py` script is running on your EC2 instance, you can mon
 
 3.  **Query the Database Directly (Most Definitive Check)**:
     This method confirms that data is actively being written to the live database.
-
+    
     -   **See the latest 5 ticks**:
-        ```bash
+        ```sh
         sqlite3 data/live_market_data.sqlite "SELECT * FROM live_ticks ORDER BY timestamp DESC LIMIT 5;"
         ```
-
+    
     -   **Watch the tick count grow in real-time**: This command re-runs every 2 seconds, showing you the total tick count and the timestamp of the latest tick. It's the best way to confirm the system is healthy.
         ```bash
         watch -n 2 'sqlite3 data/live_market_data.sqlite "SELECT COUNT(*), MAX(timestamp) FROM live_ticks;"'

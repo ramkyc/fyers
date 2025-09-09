@@ -5,6 +5,7 @@ import datetime
 import pandas as pd
 import os
 import sys
+import json
 
 # Add project root to path to allow importing config
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -33,7 +34,7 @@ def prepare_live_strategy_data():
     try:
         # 1. Determine the symbols that will be traded today
         fyers_model = get_fyers_model(get_access_token())
-        tradeable_symbols = get_top_nifty_stocks(top_n=10)
+        tradeable_symbols = get_top_nifty_stocks(top_n=50)
         atm_options = get_atm_option_symbols(fyers_model)
         symbols_to_prepare = tradeable_symbols + atm_options
 
@@ -80,6 +81,12 @@ def prepare_live_strategy_data():
                 df = df[['timestamp', 'symbol', 'resolution', 'open', 'high', 'low', 'close', 'volume']]
                 df.to_sql('live_strategy_data', live_con, if_exists='append', index=False)
                 print(f"  - Prepared {len(df)} bars for {symbol}.")
+
+        # 5. Save the full list of prepared symbols for the dashboard to use
+        live_symbols_file = os.path.join(config.DATA_DIR, 'live_symbols.json')
+        with open(live_symbols_file, 'w') as f:
+            json.dump(symbols_to_prepare, f)
+        print(f"Saved {len(symbols_to_prepare)} tradeable symbols to {live_symbols_file}")
 
         live_con.commit()
 

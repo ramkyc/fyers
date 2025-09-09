@@ -1,5 +1,11 @@
 import datetime
 
+# TODO: This hardcoded list is a form of technical debt.
+# A future enhancement should replace this with a dynamic function,
+# e.g., `_fetch_holidays_from_nse()`, that scrapes the official
+# NSE website or uses a reliable financial calendar API to get the
+# holiday list for the current year. This would make the system
+# self-updating and more robust.
 # Hardcoded NSE market holidays for 2025
 # Source: Various financial news websites, confirmed against multiple sources.
 NSE_HOLIDAYS_2025 = [

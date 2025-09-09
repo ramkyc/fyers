@@ -14,6 +14,7 @@ import sqlite3
 import plotly.graph_objects as go
 import plotly.express as px
 import concurrent.futures
+import time
 from streamlit_option_menu import option_menu
 from streamlit_autorefresh import st_autorefresh
 
@@ -21,15 +22,9 @@ from src.paper_trading.portfolio import Portfolio
 from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.backtesting.engine import BacktestingEngine
 import config # config.py is now in the project root
-from src.strategies.simple_ma_crossover import SMACrossoverStrategy
-from src.strategies.opening_price_crossover import OpeningPriceCrossoverStrategy
-# Add other strategies here as they are created
-# from src.strategies.rsi_strategy import RSIStrategy
-
-STRATEGY_MAPPING = {
-    "Simple MA Crossover": SMACrossoverStrategy,
-    "Opening Price Crossover": OpeningPriceCrossoverStrategy,
-}
+from src.market_calendar import is_market_working_day, NSE_MARKET_OPEN_TIME, NSE_MARKET_CLOSE_TIME
+from src.live_config_manager import save_config, load_config, get_engine_status, start_engine, stop_engine
+from src.strategies import STRATEGY_MAPPING # Import from the new central location
 
 # --- Configuration ---
 HISTORICAL_TABLE = "historical_data"
@@ -357,11 +352,50 @@ def render_backtesting_ui(symbols_to_test, backtest_type, resolution, start_date
                         st.subheader("Backtest Log")
                         st.code(backtest_log)
 
-def render_live_monitor_ui(auto_refresh_interval):
+def render_live_monitor_ui():
     """Renders the UI for monitoring live paper trading sessions."""
     st.header("Live Paper Trading Monitor")
-    st.markdown("This section provides a view into the live trading sessions managed by `tick_collector.py`. The data on this tab will auto-refresh every 5 seconds.")
+    st.markdown("Configure, start, stop, and monitor the live paper trading engine.")
 
+    # --- Engine Status & Control ---
+    st.subheader("Engine Status & Control")
+    
+    status_placeholder = st.empty()
+
+    def update_status():
+        status, is_running = get_engine_status()
+        if is_running:
+            status_placeholder.success(f"**Status:** {status}")
+        else:
+            status_placeholder.info(f"**Status:** {status}")
+        return is_running
+
+    is_engine_running = update_status()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Start Live Engine", disabled=is_engine_running, use_container_width=True):
+            with st.spinner("Attempting to start the live engine..."):
+                success, message = start_engine()
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                time.sleep(2) # Give time for status to update
+                st.rerun()
+
+    with col2:
+        if st.button("Stop Live Engine", disabled=not is_engine_running, use_container_width=True, type="primary"):
+            with st.spinner("Sending stop signal to the live engine..."):
+                success, message = stop_engine()
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+                time.sleep(2) # Give time for status to update
+                st.rerun()
+
+    st.markdown("---")
     # --- Live Tick Data Health Check ---
     st.subheader("Live Tick Data Health Check")
     st.markdown("Shows the last 10 ticks received by the live engine. This is the most direct way to confirm the system is collecting data.")
@@ -504,12 +538,61 @@ def main():
                 st.info("No trades were executed in this backtest run.")
 
     elif app_mode == "Live Paper Trading Monitor":
-        st.sidebar.header("Live Monitor Configuration")
-        auto_refresh_interval = st.sidebar.slider("Auto-Refresh Interval (seconds)", min_value=5, max_value=60, value=5, key="refresh_interval")
-        st_autorefresh(interval=auto_refresh_interval * 1000, key="live_monitor_refresher")
+        st.sidebar.header("Live Trading Configuration")
         
+        # Load current config to pre-populate fields
+        current_config, _ = load_config()
+        if current_config is None:
+            current_config = {} # Default to empty dict if no config exists
+
+        with st.sidebar.form("live_config_form"):
+            st.subheader("Strategy & Symbols")
+            
+            selected_strategy = st.selectbox(
+                "Select Strategy", 
+                options=list(STRATEGY_MAPPING.keys()),
+                index=list(STRATEGY_MAPPING.keys()).index(current_config.get('strategy', 'Simple MA Crossover'))
+            )
+
+            all_symbols = get_all_symbols()
+            selected_symbols = st.multiselect(
+                "Select Symbols to Trade",
+                options=all_symbols,
+                default=current_config.get('symbols', [])
+            )
+
+            st.subheader("Strategy Parameters")
+            # For now, we'll hardcode params for SMA Crossover. A more dynamic system could be built.
+            param_short_window = st.slider("Short Window", 1, 50, current_config.get('params', {}).get('short_window', 9))
+            param_long_window = st.slider("Long Window", 10, 200, current_config.get('params', {}).get('long_window', 21))
+            param_trade_quantity = st.number_input("Trade Quantity", 1, 1000, current_config.get('params', {}).get('trade_quantity', 100))
+
+            submitted = st.form_submit_button("Save Live Configuration", use_container_width=True)
+            if submitted:
+                new_config = {
+                    'strategy': selected_strategy,
+                    'symbols': selected_symbols,
+                    'params': {'short_window': param_short_window, 'long_window': param_long_window, 'trade_quantity': param_trade_quantity}
+                }
+                success, message = save_config(new_config)
+                if success:
+                    st.sidebar.success(message)
+                else:
+                    st.sidebar.error(message)
+        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Monitor Controls")
+        
+        is_market_open_now = is_market_working_day(datetime.date.today()) and \
+                             NSE_MARKET_OPEN_TIME <= datetime.datetime.now().time() <= NSE_MARKET_CLOSE_TIME
+
+        if is_market_open_now:
+            auto_refresh_interval = st.sidebar.slider("Auto-Refresh Interval (seconds)", min_value=5, max_value=60, value=5, key="refresh_interval")
+            st_autorefresh(interval=auto_refresh_interval * 1000, key="live_monitor_refresher")
+        else:
+            st.sidebar.info("Market is closed. Auto-refresh is disabled.")
         # --- Main Panel Rendering ---
-        render_live_monitor_ui(auto_refresh_interval)
+        render_live_monitor_ui()
 
 if __name__ == "__main__":
     main()

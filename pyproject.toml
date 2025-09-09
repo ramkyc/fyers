@@ -7,17 +7,21 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-fyers-apiv3 = "*"
-python-dotenv = "^1.0.0"
-requests = "^2.31.0"
-pandas = "^2.2.0"
-python-dateutil = "^2.8.2"
-pyyaml = "^6.0.1"
-pandas-ta = "^0.4.67b0"
-plotly = "^6.3.0"
-streamlit-autorefresh = "^1.0.1"
-streamlit-option-menu = "^0.4.0"
-schedule = "^1.2.2"
+fyers-apiv3 = "*" # This is a direct dependency
+python-dotenv = "^1.0.0" # For loading .env files
+pandas = "^2.3.2" # Core data manipulation library
+pandas-ta = "^0.4.67b0" # Technical analysis library
+pyyaml = "^6.0.1" # For handling YAML config files
+schedule = "^1.2.2" # For scheduling tasks
+
+# Streamlit and its ecosystem
+streamlit = "^1.49.1"
+streamlit-option-menu = "^0.4.0" # For the dashboard sidebar
+streamlit-autorefresh = "^1.0.1" # For the live monitor
+plotly = "^6.3.0" # For creating charts
+
+# Note: Other packages like requests, numpy, etc., will be installed
+# as transitive dependencies of the packages listed above.
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

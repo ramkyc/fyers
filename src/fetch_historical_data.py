@@ -258,8 +258,8 @@ if __name__ == "__main__":
         fyers = get_fyers_model(access_token)
 
         # 2. Get the list of symbols to fetch
-        # For this example, we'll fetch the top 10 Nifty stocks
-        symbols_to_fetch = get_top_nifty_stocks(top_n=10)
+        # Fetch the full Nifty 50 for more comprehensive backtesting options
+        symbols_to_fetch = get_top_nifty_stocks(top_n=50)
         print(f"\nFetching data for the following symbols: {symbols_to_fetch}")
 
         # 3. Define the resolutions to fetch

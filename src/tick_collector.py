@@ -3,7 +3,8 @@ import time
 import subprocess
 import datetime
 import os
-import sys # Add the project root to the Python path to allow absolute imports
+import sys
+import signal
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -11,10 +12,11 @@ if project_root not in sys.path:
 from src.auth import get_access_token, get_fyers_model
 from src.fetch_historical_data import get_top_nifty_stocks, get_atm_option_symbols
 from src.market_calendar import is_market_working_day
+from src.live_config_manager import load_config
 
 # --- Paper Trading Imports ---
 from src.paper_trading.engine import LiveTradingEngine
-from src.strategies.simple_ma_crossover import SMACrossoverStrategy
+from src.strategies import STRATEGY_MAPPING
 
 import config # config.py is now in the project root
 
@@ -25,6 +27,7 @@ class TradingScheduler:
     def __init__(self):
         self.paper_trading_engine = None
         self.should_exit = False
+        self.pid_file = os.path.join(config.DATA_DIR, 'live_engine.pid')
 
     def start_trading_engine(self):
         """
@@ -45,25 +48,28 @@ class TradingScheduler:
             self.prepare_live_data()
 
         try:
+            # --- Load Configuration from File ---
+            live_config, msg = load_config()
+            if not live_config:
+                print(f"ERROR: Could not start engine. {msg}")
+                return
+
+            print(f"Loaded live configuration: Strategy={live_config['strategy']}, Symbols={len(live_config['symbols'])}")
+
             raw_access_token = get_access_token()
             fyers_model = get_fyers_model(raw_access_token)
             
-            # Define symbols and strategy
-            tradeable_symbols = get_top_nifty_stocks(top_n=10)
-            atm_options = get_atm_option_symbols(fyers_model)
-            symbols_to_subscribe = tradeable_symbols + atm_options
+            # Dynamically get the strategy class from the mapping
+            strategy_class = STRATEGY_MAPPING.get(live_config['strategy'])
+            if not strategy_class:
+                print(f"ERROR: Strategy '{live_config['strategy']}' not found in STRATEGY_MAPPING.")
+                return
             
-            # 1. First, create the strategy with its parameters
-            strategy_params = {
-                'short_window': 9,
-                'long_window': 21,
-                'trade_quantity': 1
-            }
-            strategy = SMACrossoverStrategy(
-                symbols=tradeable_symbols,
+            strategy = strategy_class(
+                symbols=live_config['symbols'],
                 portfolio=None, # Portfolio will be set by the engine
                 order_manager=None, # OrderManager will be set by the engine
-                params=strategy_params
+                params=live_config['params']
             )
 
             # 2. Then, create the engine with the fully initialized strategy
@@ -76,7 +82,7 @@ class TradingScheduler:
             )
 
             # Start the engine, which will connect to WebSocket internally
-            self.paper_trading_engine.start(symbols_to_subscribe)
+            self.paper_trading_engine.start(live_config['symbols'])
             print(f"[{current_time}] Live Trading Engine started.")
 
         except Exception as e:
@@ -120,6 +126,11 @@ class TradingScheduler:
         """
         The main loop for the scheduler.
         """
+        # --- PID File Management ---
+        with open(self.pid_file, 'w') as f:
+            f.write(str(os.getpid()))
+        print(f"Scheduler started with PID {os.getpid()}. PID file created at {self.pid_file}")
+
         print("Starting Trading Engine Scheduler...")
         now = datetime.datetime.now()
         market_open_time = datetime.time(9, 14)
@@ -146,6 +157,14 @@ class TradingScheduler:
 # --- Main Execution ---
 if __name__ == "__main__":
     scheduler = TradingScheduler()
+
+    def signal_handler(sig, frame):
+        print("\nGraceful shutdown signal received. Stopping engine...")
+        scheduler.stop_trading_engine()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+
     try:
         scheduler.run()
     except KeyboardInterrupt:
@@ -154,5 +173,8 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nAn unexpected error occurred: {e}. Shutting down engine...")
         scheduler.stop_trading_engine()
-    
+    finally:
+        if os.path.exists(scheduler.pid_file):
+            os.remove(scheduler.pid_file)
+        print("PID file cleaned up.")
     print("Script finished.")

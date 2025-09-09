@@ -40,3 +40,5 @@ logs/
 
 # Data files
 data/*.sqlite
+data/live_config.yaml
+data/live_engine.pid

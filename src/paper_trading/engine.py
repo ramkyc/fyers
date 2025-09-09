@@ -230,6 +230,9 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
         """
         # The unsubscribe method requires the list of symbols to stop listening to.
         self.unsubscribe(symbols=self.symbols_to_subscribe)
+        # Explicitly close the WebSocket connection to terminate background threads.
+        print(f"[{datetime.datetime.now()}] Closing WebSocket connection...")
+        self.close_connection()
         
         # --- Process any remaining incomplete bars on shutdown ---
         print(f"[{datetime.datetime.now()}] Processing any remaining incomplete bars before shutdown...")
