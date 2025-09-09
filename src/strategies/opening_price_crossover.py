@@ -26,8 +26,16 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.ema_fast_period = self.params.get('ema_fast', 9)
         self.ema_slow_period = self.params.get('ema_slow', 21)
         self.rr_ratio_target1 = self.params.get('rr1', 1.0)
-        self.rr_ratio_target2 = self.params.get('rr2', 3.0)
-        self.exit_percent_target1 = self.params.get('exit_pct1', 0.7) # 70%
+        self.rr_ratio_target2 = self.params.get('rr2', 1.5)
+        self.rr_ratio_target3 = self.params.get('rr3', 3.0)
+        self.exit_percent_target1 = self.params.get('exit_pct1', 0.5) # 50%
+        self.exit_percent_target2 = self.params.get('exit_pct2', 0.2) # 20%
+        # The final exit percentage is implied (100% - 50% - 20% = 30%)
+
+        # New ATR-based Stop-Loss parameters
+        self.atr_period = self.params.get('atr_period', 14)
+        self.atr_multiplier = self.params.get('atr_multiplier', 1.5)
+
         self.trade_value: float = float(self.params.get('trade_value', 25000.0))
         # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
         # If resolutions is None, it implies a live trading context.
@@ -96,6 +104,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             # --- Indicator Calculations ---
             df.ta.ema(length=self.ema_fast_period, append=True)
             df.ta.ema(length=self.ema_slow_period, append=True)
+            df.ta.atr(length=self.atr_period, append=True) # Calculate ATR
             
             # Get the latest values
             latest = df.iloc[-1]
@@ -103,6 +112,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             
             ema_fast = latest[f'EMA_{self.ema_fast_period}']
             ema_slow = latest[f'EMA_{self.ema_slow_period}']
+            atr_value = latest[f'ATRr_{self.atr_period}']
 
             # --- Position Management ---
             active_trade = self.portfolio.positions.get(symbol)
@@ -112,17 +122,25 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 trade_details = self.active_trades[symbol]
                 if not trade_details: continue # Should not happen if position is active
 
-                # Check Target 2 first
-                if latest['high'] >= trade_details['target2']:
-                    self._log_debug(f"{timestamp} | {symbol} | EXIT T2: Selling remaining {active_trade['quantity']} shares at {trade_details['target2']}")
-                    self.sell(symbol, active_trade['quantity'], trade_details['target2'], timestamp, is_live)
+                # Check Target 3 first (highest target)
+                if not trade_details.get('t3_hit', False) and latest['high'] >= trade_details['target3']:
+                    self._log_debug(f"{timestamp} | {symbol} | EXIT T3: Selling remaining {active_trade['quantity']} shares at {trade_details['target3']}")
+                    self.sell(symbol, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
 
+                # Check Target 2
+                if not trade_details.get('t2_hit', False) and latest['high'] >= trade_details['target2']:
+                    qty_to_sell_t2 = int(trade_details['initial_quantity'] * self.exit_percent_target2)
+                    if qty_to_sell_t2 > 0 and active_trade['quantity'] >= qty_to_sell_t2:
+                        self._log_debug(f"{timestamp} | {symbol} | EXIT T2: Selling {qty_to_sell_t2} shares at {trade_details['target2']}")
+                        self.sell(symbol, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
+                        trade_details['t2_hit'] = True
+
                 # Check Target 1
-                if not trade_details['t1_hit'] and latest['high'] >= trade_details['target1']:
+                if not trade_details.get('t1_hit', False) and latest['high'] >= trade_details['target1']:
                     qty_to_sell = int(trade_details['initial_quantity'] * self.exit_percent_target1)
-                    if qty_to_sell > 0:
+                    if qty_to_sell > 0 and active_trade['quantity'] >= qty_to_sell:
                         self._log_debug(f"{timestamp} | {symbol} | EXIT T1: Selling {qty_to_sell} shares at {trade_details['target1']}")
                         self.sell(symbol, qty_to_sell, trade_details['target1'], timestamp, is_live)
                         trade_details['t1_hit'] = True
@@ -156,13 +174,17 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
 
                 if is_ema_bullish and is_price_bullish and crossover_count > average_implied_crossover_count:
                     entry_price = latest['close']
-                    stop_loss = min(latest['low'], previous['low'])
+                    
+                    # New dynamic stop-loss calculation
+                    volatility_stop = min(latest['low'], previous['low'])
+                    atr_stop = entry_price - (atr_value * self.atr_multiplier)
+                    stop_loss = min(volatility_stop, atr_stop)
+
                     risk_per_share = entry_price - stop_loss
 
                     if risk_per_share <= 0: continue
 
-                    target1 = entry_price + (risk_per_share * self.rr_ratio_target1)
-                    target2 = entry_price + (risk_per_share * self.rr_ratio_target2)
+                    target1, target2, target3 = self._calculate_targets(entry_price, risk_per_share)
                     
                     # Dynamic quantity calculation based on trade value
                     if entry_price > 0:
@@ -175,9 +197,19 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                                 'stop_loss': stop_loss,
                                 'target1': target1,
                                 'target2': target2,
+                                'target3': target3,
                                 'initial_quantity': quantity,
-                                't1_hit': False
+                                't1_hit': False,
+                                't2_hit': False,
+                                't3_hit': False # Not strictly needed but good for consistency
                             }
+
+    def _calculate_targets(self, entry_price, risk_per_share):
+        """Helper function to calculate all three profit targets."""
+        target1 = entry_price + (risk_per_share * self.rr_ratio_target1)
+        target2 = entry_price + (risk_per_share * self.rr_ratio_target2)
+        target3 = entry_price + (risk_per_share * self.rr_ratio_target3)
+        return target1, target2, target3
 
     def _calculate_implied_crossover_count(self, symbol: str, primary_timestamp: datetime.datetime, primary_open_price: float, market_data_all_resolutions: dict) -> int:
         """

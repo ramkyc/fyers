@@ -25,18 +25,11 @@ This document serves as a central backlog for all new features, enhancements, an
     *   This will likely require creating a new strategy file in `src/strategies/` and integrating it into the platform.
 *   **Status:** Awaiting Project Brief.
 *   
-### 3. Investigate Live Trade Execution for SMA Strategy
-
-*   **Goal:** To diagnose and understand why the `SMACrossoverStrategy` is not generating trades during live paper trading sessions, even though the engine is processing ticks and creating bars.
-*   **Core Requirements:**
-    *   Implement enhanced, detailed logging within the `LiveTradingEngine` and/or the `SMACrossoverStrategy`.
-    *   The logs should capture the state of key variables at the exact moment the strategy's `on_data` method is called for a specific symbol.
-    *   This includes: the short and long EMA values, the previous EMA values, the current LTP, and the reason a trade was or was not generated (e.g., "crossover condition not met", "position already exists").
-    *   Perform a code walkthrough or use the enhanced logs to trace the decision-making process for a live symbol over several bars to pinpoint the issue.
-*   **Status:** Awaiting Analysis.
-
 ---
 
 ## Completed Features
 
-*(This section can be used to track major features as they are completed and merged into the main branch.)*
+### 1. Stabilize Live Trading and Backtesting
+*   **Goal:** To diagnose and fix issues preventing the live paper trading engine from executing trades and to resolve regressions in the backtesting engine.
+*   **Outcome:** Implemented detailed logging to debug the live engine, fixed several data contract and UI state bugs, and stabilized the backtesting engine for all timeframes. The system is now in a reliable working state.
+*   **Status:** Completed.

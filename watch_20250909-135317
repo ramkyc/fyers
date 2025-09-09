@@ -1,0 +1,26 @@
+Every 5.0s: sqlite3 data/trading_log.sqlite "SELECT * FROM paper_trades WHERE run_id LIKE… Ramakrishnas-MacBook-Pro.local: 13:53:14
+                                                                                                                      in 0.017s (1)
+-- Loading resources from /Users/ramakrishna/.sqliterc                                                                             
+Error: in prepare, near "ORDER": syntax error                                                                                      
+  LECT * FROM paper_trades WHERE run_id LIKE live_% ORDER BY timestamp DESC LIMI                                                   
+                                      error here ---^                                                                              
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   
+                                                                                                                                   

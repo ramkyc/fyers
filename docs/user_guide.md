@@ -151,16 +151,6 @@ This area appears right after you click "Run Backtest" and shows the results for
     -   **When to use it:** This is your primary tool for **deep debugging**. If a trade didn't happen when you thought it should have, this log will tell you why.
 
 #### Trading Activity Logs (Permanent Archive)
-
-This is the main section at the bottom of the dashboard where you can review the **permanent, saved history of any past run**—whether it was a backtest or a live paper trading session.
-
--   **Portfolio Log:** This shows how your portfolio's value changed over time. It is only populated by **live paper trading sessions**, not by backtests.
--   **Trade Log:** This is the **permanent, database record** of every single trade from the run you select in the dropdown. Use this to audit and analyze trades from any past session.
-
-### Deploying for Live Trading & Archiving (Production Environment)
-
-The live trading component is designed to be an automated, scheduled process, typically run on a server (like an AWS EC2 instance).
-
 -   **Entry Point**: `src/tick_collector.py`
 -   **Functionality**:
     -   At 9:14 AM on market days, it starts the `LiveTradingEngine`.
@@ -168,7 +158,18 @@ The live trading component is designed to be an automated, scheduled process, ty
     -   At 3:31 PM, it stops the engine.
     -   At 4:00 PM, it runs the `src/archive_live_data.py` script, which moves the day's captured ticks from the temporary `live_market_data.sqlite` to the permanent `historical_market_data.sqlite` and clears the live table for the next day.
 
-#### Monitoring the Live System
+### Running Live Paper Trading
+
+The "Live Paper Trading Monitor" tab on the dashboard is your control center for simulated live trading.
+
+1.  **Configure Live Trading**: Use the sidebar to select a single strategy, the symbols it should trade, and its parameters. A key parameter is **Trade Value (INR)**, which tells the system how much capital to allocate for each new trade.
+2.  **Start the Engine**: Click the "Start Live Engine" button. This will launch the `tick_collector.py` script as a background process.
+3.  **Monitor Performance**:
+    -   The **Live Portfolio Performance** chart will update in near-real-time, showing your equity curve as the engine runs.
+    -   The **Live Session Logs** table at the bottom allows you to inspect the trade log for the current or any past live session.
+4.  **Stop the Engine**: Click "Stop Live Engine" to gracefully shut down the background process.
+
+### Monitoring the Live System on a Server
 
 Once the `tick_collector.py` script is running on your EC2 instance, you can monitor its activity in several ways:
 
@@ -204,12 +205,11 @@ The platform is designed to be easily extensible. To add your own trading strate
 1.  **Create a Strategy File**: Create a new Python file in `src/strategies/`, for example, `my_new_strategy.py`.
 2.  **Inherit from `BaseStrategy`**: Your strategy class must inherit from `src/strategies/base_strategy.py`.
 3.  **Implement Core Methods**:
-    -   `generate_signals(self, data)`: This method is for **backtesting**. It should contain vectorized logic (using pandas) to generate buy/sell signals across the entire historical dataset at once.
-    -   `on_data(self, timestamp, market_data_all_resolutions, **kwargs)`: This is the primary method for both **backtesting and live trading**. It is called for each new data point (a historical bar in a backtest, or a newly completed bar in a live session). The `is_live_trading` flag within `kwargs` allows you to add context-specific logic if needed.
-4.  **Register in Dashboard**: Open `web_ui/dashboard.py` and add your new strategy class to the `STRATEGY_MAPPING` dictionary. This will make it available in the strategy dropdown in the UI.
+    -   `on_data(self, timestamp, market_data_all_resolutions, **kwargs)`: This is the primary method for both backtesting and live trading. It is called for each new data point (a historical bar in a backtest, or a newly completed bar in a live session). The `is_live_trading` flag within `kwargs` allows you to add context-specific logic if needed.
+4.  **Register in `strategies/__init__.py`**: Open `src/strategies/__init__.py` and add your new strategy class to the `STRATEGY_MAPPING` dictionary. This will make it available in the strategy dropdowns across the entire application.
 
 ```python
-# In web_ui/dashboard.py
+# In src/strategies/__init__.py
 
 from src.strategies.my_new_strategy import MyNewStrategy
 

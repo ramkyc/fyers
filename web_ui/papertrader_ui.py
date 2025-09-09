@@ -7,7 +7,7 @@ import datetime
 from src.live_config_manager import save_config, load_config, get_engine_status, start_engine, stop_engine
 from src.strategies import STRATEGY_MAPPING
 from src.market_calendar import is_market_working_day, NSE_MARKET_OPEN_TIME, NSE_MARKET_CLOSE_TIME
-from web_ui.utils import get_all_symbols, get_all_run_ids, load_live_portfolio_log, load_live_ticks, load_log_data
+from web_ui.utils import get_live_tradeable_symbols, get_all_run_ids, load_live_portfolio_log, load_log_data
 
 def render_page():
     """Renders the entire Live Paper Trading Monitor page."""
@@ -24,7 +24,8 @@ def render_page():
             index=list(STRATEGY_MAPPING.keys()).index(current_config.get('strategy', 'Simple MA Crossover'))
         )
 
-        all_symbols = get_all_symbols()
+        # Use the new function to get today's relevant symbols
+        all_symbols = get_live_tradeable_symbols()
         selected_symbols = st.multiselect(
             "Select Symbols to Trade",
             options=all_symbols,
@@ -39,8 +40,16 @@ def render_page():
         elif selected_strategy == "Opening Price Crossover":
             live_params['ema_fast'] = st.slider("EMA Fast Period", 2, 20, current_config.get('params', {}).get('ema_fast', 9), key="live_opc_ef")
             live_params['ema_slow'] = st.slider("EMA Slow Period", 10, 50, current_config.get('params', {}).get('ema_slow', 21), key="live_opc_es")
-            live_params['rr1'] = st.number_input("Risk/Reward Target 1", 0.5, 5.0, current_config.get('params', {}).get('rr1', 1.0), 0.1, key="live_opc_rr1")
-            live_params['rr2'] = st.number_input("Risk/Reward Target 2", 1.0, 10.0, current_config.get('params', {}).get('rr2', 3.0), 0.1, key="live_opc_rr2")
+            st.markdown("###### Stop-Loss Settings")
+            live_params['atr_period'] = st.slider("ATR Period", 5, 50, current_config.get('params', {}).get('atr_period', 14), key="live_opc_atr_p")
+            live_params['atr_multiplier'] = st.number_input("ATR Multiplier", 1.0, 5.0, current_config.get('params', {}).get('atr_multiplier', 1.5), 0.1, key="live_opc_atr_m")
+            st.markdown("###### Profit Target Settings")
+            live_params['rr1'] = st.number_input("R:R Target 1", 0.1, 5.0, current_config.get('params', {}).get('rr1', 0.5), 0.1, key="live_opc_rr1")
+            live_params['exit_pct1'] = st.slider("Exit % at T1", 10, 100, current_config.get('params', {}).get('exit_pct1', 50), 5, key="live_opc_pct1")
+            live_params['rr2'] = st.number_input("R:R Target 2", 0.5, 10.0, current_config.get('params', {}).get('rr2', 1.5), 0.1, key="live_opc_rr2")
+            live_params['exit_pct2'] = st.slider("Exit % at T2", 10, 100, current_config.get('params', {}).get('exit_pct2', 20), 5, key="live_opc_pct2")
+            live_params['rr3'] = st.number_input("R:R Target 3", 1.0, 20.0, current_config.get('params', {}).get('rr3', 3.0), 0.1, key="live_opc_rr3")
+            st.info("The remaining position will be sold at Target 3.")
         
         live_params['trade_value'] = st.number_input("Trade Value (INR)", min_value=1000, max_value=100000, value=current_config.get('params', {}).get('trade_value', 25000), step=1000, key="live_common_val")
 

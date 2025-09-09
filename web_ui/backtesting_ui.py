@@ -122,8 +122,16 @@ def render_page():
             elif selected_strategy_name == "Opening Price Crossover":
                 strategy_params['ema_fast'] = st.slider("EMA Fast Period", 2, 20, 9, key="bt_opc_ef")
                 strategy_params['ema_slow'] = st.slider("EMA Slow Period", 10, 50, 21, key="bt_opc_es")
-                strategy_params['rr1'] = st.number_input("Risk/Reward Target 1", 0.5, 5.0, 1.0, 0.1, key="bt_opc_rr1")
-                strategy_params['rr2'] = st.number_input("Risk/Reward Target 2", 1.0, 10.0, 3.0, 0.1, key="bt_opc_rr2")
+                st.markdown("###### Stop-Loss Settings")
+                strategy_params['atr_period'] = st.slider("ATR Period", 5, 50, 14, key="bt_opc_atr_p")
+                strategy_params['atr_multiplier'] = st.number_input("ATR Multiplier", 1.0, 5.0, 1.5, 0.1, key="bt_opc_atr_m")
+                st.markdown("###### Profit Target Settings")
+                strategy_params['rr1'] = st.number_input("R:R Target 1", 0.1, 5.0, 0.5, 0.1, key="bt_opc_rr1")
+                strategy_params['exit_pct1'] = st.slider("Exit % at T1", 10, 100, 50, 5, key="bt_opc_pct1")
+                strategy_params['rr2'] = st.number_input("R:R Target 2", 0.5, 10.0, 1.5, 0.1, key="bt_opc_rr2")
+                strategy_params['exit_pct2'] = st.slider("Exit % at T2", 10, 100, 20, 5, key="bt_opc_pct2")
+                strategy_params['rr3'] = st.number_input("R:R Target 3", 1.0, 20.0, 3.0, 0.1, key="bt_opc_rr3")
+                st.info("The remaining position will be sold at Target 3.")
             run_button_label = "Run Backtest"
 
         st.subheader("Common Parameters")

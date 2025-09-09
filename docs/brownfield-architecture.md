@@ -37,9 +37,9 @@ The system is designed with a clear separation of concerns, isolating data fetch
 
 ### `src/backtesting`
 - **Purpose**: Provides a flexible, event-driven backtesting engine.
-- **Key Files**: `engine.py`, `portfolio.py`
+- **Key Files**: `engine.py`
 - **Functionality**: The `BacktestingEngine` simulates the passage of time by iterating through historical data candle-by-candle. It supports both 'Positional' and 'Intraday' trading modes, with rules for time-windowed entries and automated end-of-day position closing. This event-driven model provides a more realistic simulation of live trading conditions.
-- **Isolation**: Each backtest run uses a dedicated, in-memory `BacktestPortfolio` and is assigned a unique `run_id` to ensure complete isolation of its trade logs.
+- **Isolation**: Each backtest run uses a dedicated, in-memory `BacktestPortfolio` and is assigned a unique `run_id` to ensure complete isolation of its trade logs. The `BacktestPortfolio` is defined in `src/backtesting/portfolio.py`.
 
 ### `src/strategies`
 - **Purpose**: Defines the logic for making trading decisions.
@@ -53,8 +53,12 @@ The system is designed with a clear separation of concerns, isolating data fetch
 
 ### `web_ui`
 - **Purpose**: The main user interface for the application.
-- **Key Files**: `dashboard.py`
-- **Functionality**: A Streamlit application that allows users to configure and run single backtests or multi-parameter optimizations. It visualizes results with interactive charts and tables and displays logs from the trading database.
+- **Key Files**: `dashboard.py`, `backtesting_ui.py`, `papertrader_ui.py`, `utils.py`
+- **Functionality**: A modular Streamlit application.
+    - `dashboard.py`: Acts as the main entry point and router, displaying the top-level menu.
+    - `backtesting_ui.py`: Contains all UI components for the backtesting and optimization tab.
+    - `papertrader_ui.py`: Contains all UI components for the live paper trading monitor.
+    - `utils.py`: A collection of shared helper functions for loading data and connecting to databases, used by the other UI modules.
 
 ## 3. Data Architecture & Flow
 
@@ -78,7 +82,7 @@ The application uses three separate SQLite databases to maintain a clean separat
   - **Purpose**: Stores the results of trading activity.
   - **Tables**:
     - `paper_trades`: A log of all individual trades from both backtesting and live simulation, distinguished by a `run_id`.
-    - `portfolio_log`: A time-series log of portfolio value, used for generating equity curves. **This is intended for live trading sessions but is currently not populated.** Backtests generate an in-memory equity curve that is displayed directly on the dashboard.
+    - `portfolio_log`: A time-series log of portfolio value, used for generating equity curves for live trading sessions. Backtests generate a separate, in-memory equity curve that is displayed directly on the dashboard.
   - **Populated By**: `src/paper_trading/oms.py` (for both backtesting and live trading).
   - **Read By**: `web_ui/dashboard.py` to display trade logs from any run.
 

@@ -5,6 +5,7 @@ import sqlite3
 import pandas as pd
 import os
 import datetime
+import json
 
 import config
 from src.strategies import STRATEGY_MAPPING
@@ -50,11 +51,6 @@ def run_and_capture_backtest(engine, strategy_class, symbols, params, initial_ca
     backtest_log = f.getvalue()
     return portfolio_result, last_prices, backtest_log
 
-@st.cache_resource
-def get_db_connection(db_file):
-    """Establishes and returns a SQLite connection."""
-    return sqlite3.connect(f'file:{db_file}?mode=ro', uri=True)
-
 @st.cache_data(ttl=3600) # Cache for 1 hour
 def get_market_time_options(interval_minutes=15):
     """Generates a list of time options within market hours."""
@@ -85,10 +81,15 @@ def get_all_symbols():
     if not os.path.exists(config.HISTORICAL_MARKET_DB_FILE):
         st.warning(f"Historical market data file not found at {config.HISTORICAL_MARKET_DB_FILE}. Please run `python src/fetch_historical_data.py` to generate it.")
         return []
-    con = get_db_connection(config.HISTORICAL_MARKET_DB_FILE)
-    query = "SELECT DISTINCT symbol FROM historical_data ORDER BY symbol;"
-    df = pd.read_sql_query(query, con)
-    return df['symbol'].tolist() if not df.empty else []
+    try:
+        # Each function should create its own connection to ensure thread safety.
+        with sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True) as con:
+            query = "SELECT DISTINCT symbol FROM historical_data ORDER BY symbol;"
+            df = pd.read_sql_query(query, con)
+            return df['symbol'].tolist() if not df.empty else []
+    except Exception as e:
+        st.error(f"Error reading symbols from historical database: {e}")
+        return []
 
 @st.cache_data(ttl=60)
 def get_all_run_ids():
@@ -110,15 +111,17 @@ def load_live_portfolio_log(run_id: str):
     df = load_log_data(query, params=(run_id,))
     return df
 
-@st.cache_data(ttl=10) # Cache for 10 seconds for live data
-def load_live_ticks():
-    """Loads the last few ticks from the live market data database."""
-    if not os.path.exists(config.LIVE_MARKET_DB_FILE):
-        return pd.DataFrame()
+@st.cache_data(ttl=60) # Cache for 1 minute
+def get_live_tradeable_symbols():
+    """Fetches the list of symbols prepared for today's live trading."""
+    live_symbols_file = os.path.join(config.DATA_DIR, 'live_symbols.json')
+    if not os.path.exists(live_symbols_file):
+        st.warning("Live symbols file not found. Please ensure the daily data preparation script has run.")
+        return get_all_symbols() # Fallback to all historical symbols
     try:
-        with sqlite3.connect(f'file:{config.LIVE_MARKET_DB_FILE}?mode=ro', uri=True) as con:
-            query = "SELECT * FROM live_ticks ORDER BY timestamp DESC LIMIT 10;"
-            df = pd.read_sql_query(query, con)
-            return df
-    except Exception:
-        return pd.DataFrame()
+        with open(live_symbols_file, 'r') as f:
+            symbols = json.load(f)
+        return sorted(symbols)
+    except Exception as e:
+        st.error(f"Error reading live symbols file: {e}")
+        return []
