@@ -38,8 +38,10 @@ class SMACrossoverStrategy(BaseStrategy):
                 return default
         self.short_window: int = safe_int(self.params.get('short_window', 5), 5)
         self.long_window: int = safe_int(self.params.get('long_window', 20), 20)
-        self.trade_quantity: int = safe_int(self.params.get('trade_quantity', 10), 10)
-        self.primary_resolution = resolutions[0] if resolutions else "D" # Default primary resolution for this strategy
+        self.trade_quantity: int = safe_int(self.params.get('trade_quantity', 10), 10)        
+        # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
+        # If resolutions is None, it implies a live trading context.
+        self.primary_resolution = resolutions[0] if resolutions else "1"
         self.short_sma: 'defaultdict[str, pd.Series]' = defaultdict(pd.Series)
         self.long_sma: 'defaultdict[str, pd.Series]' = defaultdict(pd.Series)
 
@@ -67,6 +69,34 @@ class SMACrossoverStrategy(BaseStrategy):
         long_windows = range(opt_params['long_window'][0], opt_params['long_window'][1] + 1, opt_params.get('long_window_step', 1))
         return [{'short_window': sw, 'long_window': lw} for sw in short_windows for lw in long_windows if sw < lw]
 
+    def _log_live_decision_data(self, symbol: str, timestamp: datetime.datetime, data: dict):
+        """Helper to log the data used for making a live trade decision."""
+        def _format_float(value):
+            """Safely formats a float or returns 'nan'."""
+            if isinstance(value, (int, float)) and not np.isnan(value):
+                return f"{value:.2f}"
+            return "nan"
+
+        ltp = data.get('ltp', 'N/A')
+        short_sma = data.get('short_sma', 'N/A')
+        long_sma = data.get('long_sma', 'N/A')
+        prev_short_sma = data.get('prev_short_sma', 'N/A')
+        prev_long_sma = data.get('prev_long_sma', 'N/A')
+        position_exists = data.get('position_exists', 'N/A')
+        
+        bullish_crossover_check = "N/A"
+        if all(isinstance(v, (int, float)) and not np.isnan(v) for v in [short_sma, long_sma, prev_short_sma, prev_long_sma]):
+             bullish_crossover_check = (short_sma > long_sma and prev_short_sma <= prev_long_sma)
+
+        print(
+            f"[{timestamp}] DEBUG FOR {symbol}:\n"
+            f"  - LTP: {_format_float(ltp)}\n"
+            f"  - Short SMA (curr/prev): {_format_float(short_sma)} / {_format_float(prev_short_sma)}\n"
+            f"  - Long SMA (curr/prev): {long_sma:.2f} / {_format_float(prev_long_sma)}\n"
+            f"  - Position Exists: {position_exists}\n"
+            f"  - Bullish Crossover Condition Met: {bullish_crossover_check}\n"
+            f"  --------------------------------------------------"
+        )
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         """
         Processes new data (live ticks) and executes trades if a crossover occurs.
@@ -81,10 +111,47 @@ class SMACrossoverStrategy(BaseStrategy):
         for symbol in self.symbols:
             if symbol not in data:
                 continue
+            
+            bar_history_list = data[symbol]
+
+            # --- Robustness Check for Shutdown ---
+            # On shutdown, we might receive a list with only one bar. This check prevents errors.
+            if len(bar_history_list) < 2:
+                continue
+
+            # --- LOGGING BLOCK (Moved Up) ---
+            # We log here to see the state on every bar, even before we have enough data for indicators.
+            if is_live_trading:
+                df_temp = pd.DataFrame(bar_history_list)
+                
+                # Initialize all values to NaN
+                short_sma_val, prev_short_sma_val = np.nan, np.nan
+                long_sma_val, prev_long_sma_val = np.nan, np.nan
+                ltp = df_temp['close'].iloc[-1] if not df_temp.empty else np.nan
+
+                # Calculate SMAs only if enough data exists
+                if len(df_temp) >= self.short_window:
+                    short_sma_series = df_temp['close'].rolling(window=self.short_window).mean()
+                    short_sma_val = short_sma_series.iloc[-1]
+                    if len(df_temp) >= self.short_window + 1:
+                        prev_short_sma_val = short_sma_series.iloc[-2]
+
+                if len(df_temp) >= self.long_window:
+                    long_sma_series = df_temp['close'].rolling(window=self.long_window).mean()
+                    long_sma_val = long_sma_series.iloc[-1]
+                    if len(df_temp) >= self.long_window + 1:
+                        prev_long_sma_val = long_sma_series.iloc[-2]
+
+                log_data = {
+                    'ltp': ltp, 'short_sma': short_sma_val, 'long_sma': long_sma_val,
+                    'prev_short_sma': prev_short_sma_val, 'prev_long_sma': prev_long_sma_val,
+                    'position_exists': self.portfolio.get_position(symbol) is not None
+                }
+                self._log_live_decision_data(symbol, timestamp, log_data)
+            # --- END OF LOGGING BLOCK ---
 
             # The engine now provides the full, managed bar history directly.
             # We convert it to a DataFrame for easy calculation.
-            bar_history_list = data[symbol]
             if len(bar_history_list) < self.long_window:
                 continue # Not enough data to calculate the long-term SMA
 

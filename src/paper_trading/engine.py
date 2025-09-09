@@ -124,6 +124,50 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
         else: # This 'else' correctly corresponds to the 'if quotes_to_process:'
             print(f"[{datetime.datetime.now()}] Received non-quote message: {message}")
 
+    def _log_live_portfolio_value(self, timestamp):
+        """Logs the current portfolio value to the database for live tracking."""
+        try:
+            summary = self.portfolio.get_performance_summary(self.last_known_prices)
+            with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
+                cursor = con.cursor()
+                # 1. Ensure the table exists with a minimal schema.
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS portfolio_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_id TEXT NOT NULL,
+                        timestamp DATETIME NOT NULL
+                    );
+                """)
+
+                # 2. Check for and add missing columns to handle schema evolution.
+                cursor.execute("PRAGMA table_info(portfolio_log)")
+                columns = [info[1] for info in cursor.fetchall()]
+                
+                if 'value' not in columns:
+                    cursor.execute("ALTER TABLE portfolio_log ADD COLUMN value REAL;")
+                if 'cash' not in columns:
+                    cursor.execute("ALTER TABLE portfolio_log ADD COLUMN cash REAL;")
+                if 'holdings' not in columns:
+                    cursor.execute("ALTER TABLE portfolio_log ADD COLUMN holdings REAL;")
+
+                # 3. Insert the data.
+                cursor.execute(
+                    """
+                    INSERT INTO portfolio_log (run_id, timestamp, value, cash, holdings)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.run_id,
+                        timestamp,
+                        summary['total_portfolio_value'],
+                        summary['final_cash'],
+                        summary['holdings_value']
+                    )
+                )
+                con.commit() # Explicitly commit the transaction
+        except Exception as e:
+            print(f"Error logging live portfolio value: {e}")
+
     def _resample_and_execute(self, current_tick_timestamp: datetime.datetime, symbol: str, price: float):
         """
         Resamples ticks into 1-minute bars. When a bar is complete, it triggers the strategy.
@@ -160,6 +204,9 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
                     self.strategy.on_data(completed_bar['timestamp'], market_data_for_strategy, is_live_trading=True)
                 except Exception as e:
                     print(f"Error executing strategy.on_data for {s}: {e}")
+                
+                # --- Log Portfolio Value After Strategy Execution ---
+                self._log_live_portfolio_value(completed_bar['timestamp'])
 
         # --- Step 2: Update or create the bar for the CURRENT tick's symbol ---
         bar_timestamp = current_tick_timestamp.replace(second=0, microsecond=0)
@@ -188,8 +235,12 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
         print(f"[{datetime.datetime.now()}] WebSocket connection established. Subscribing to symbols...")
         self.subscribe(symbols=self.symbols_to_subscribe)
 
-    def on_close(self):
-        print(f"[{datetime.datetime.now()}] WebSocket connection closed.")
+    def on_close(self, *args, **kwargs):
+        """
+        Callback function for when the connection is closed.
+        Accepts variable arguments to be compatible with the library's call signature.
+        """
+        print(f"[{datetime.datetime.now()}] WebSocket connection closed. Args: {args}, Kwargs: {kwargs}")
 
     def start(self, symbols_to_subscribe: list):
         """
@@ -238,7 +289,9 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
         print(f"[{datetime.datetime.now()}] Processing any remaining incomplete bars before shutdown...")
         for s, bar in self.incomplete_bars.items():
             print(f"[{datetime.datetime.now()}] Force-closing 1m bar for {s}: C={bar['close']}")
-            market_data_for_strategy = {'1': {s: bar}}
+            # The strategy expects a list of bars, even if there's only one.
+            # We wrap the single 'bar' dictionary in a list to match the expected data structure.
+            market_data_for_strategy = {'1': {s: [bar]}}
             try:
                 # Use the bar's start time for the event
                 self.strategy.on_data(bar['timestamp'], market_data_for_strategy, is_live_trading=True)
@@ -251,7 +304,7 @@ class LiveTradingEngine(data_ws.FyersDataSocket):
         print(f"[{datetime.datetime.now()}] Total ticks processed this session: {self.tick_counter}.")
         print("\n--- Stopping Live Trading Engine ---")
         print("Final Portfolio Performance:")
-        self.portfolio.print_final_summary(self.last_known_prices)
+        self.portfolio.print_final_summary(self.last_known_prices, context="Live Session")
         print("-------------------------------------\n")
 
     def on_error(self, message):

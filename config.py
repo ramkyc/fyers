@@ -40,6 +40,10 @@ TRADING_DB_FILE = os.path.join(DATA_DIR, 'trading_log.sqlite')
 # --- Log Path ---
 LOG_PATH = os.path.join(project_root, 'logs')
 
+# --- Master Safety Switch for Live Trading ---
+# Set this to True ONLY when you are ready to place real orders.
+ENABLE_LIVE_TRADING = False
+
 print(f"--- Configuration loaded for ENVIRONMENT: {ENVIRONMENT} ---")
 
 # --- Data Fetching Configuration ---

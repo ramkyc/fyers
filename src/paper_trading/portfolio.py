@@ -149,12 +149,14 @@ class Portfolio:
             "total_trades": len(self.trades)
         }
 
-    def print_final_summary(self, current_prices):
+    def print_final_summary(self, current_prices, context="Backtest"):
         """
         Prints a detailed final summary of the portfolio's performance.
 
         Args:
             current_prices (dict): A dictionary mapping symbols to their last known price.
+            context (str): The context of the run, e.g., "Backtest" or "Live Session".
+                            This is used to customize the output titles.
         """
         summary = self.get_performance_summary(current_prices)
 
@@ -169,7 +171,7 @@ class Portfolio:
         print(f"Final Cash Balance:       {summary['final_cash']:,.2f}")
         print(f"Final Holdings Value:     {summary['holdings_value']:,.2f}")
         
-        print("\n--- Open Positions at End of Backtest ---")
+        print(f"\n--- Open Positions at End of {context} ---")
         if not self.positions:
             print("  <No open positions>")
         else:
