@@ -29,6 +29,14 @@ NSE_HOLIDAYS_2025 = [
 NSE_MARKET_OPEN_TIME = datetime.time(9, 15, 0) # 9:15 AM
 NSE_MARKET_CLOSE_TIME = datetime.time(15, 30, 0) # 3:30 PM
 
+def get_trading_holidays(year: int) -> list[datetime.date]:
+    """
+    Returns a list of trading holidays for a given year.
+    Currently hardcoded for 2025.
+    """
+    # This function can be enhanced later to fetch holidays dynamically.
+    return NSE_HOLIDAYS_2025 if year == 2025 else []
+
 def is_market_working_day(date: datetime.date) -> bool:
     """
     Checks if the given date is an NSE market working day.

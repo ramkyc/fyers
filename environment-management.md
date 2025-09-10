@@ -19,12 +19,17 @@ This document outlines the different environments used for this project and the 
 - **Purpose**: This environment is for automated, live operations, such as continuous data collection and running the live paper trading simulation.
 - **Location**: A remote AWS EC2 instance.
 - **Setup**:
-    - **Operating System**: Typically a Linux distribution.
+    - **Operating System**: Amazon Linux.
+    - **Poetry Installation**: Poetry must be installed manually. The recommended command is `curl -sSL https://install.python-poetry.org | python3 -`.
+    - **PATH Configuration**: To ensure the `poetry` command is always available, the `~/.bash_profile` file must be updated with the following line:
+      ```bash
+      export PATH="$HOME/.local/bin:$PATH"
+      ```
     - **Configuration**: Uses a separate `.env` file located on the EC2 instance itself. This file contains production-level credentials and settings.
     - **Databases**: While it can use local SQLite files on the instance, a production setup might be configured to use a more robust database service like Amazon RDS in the future.
 - **Execution**:
-    - Scripts are run automatically using scheduling tools like `cron` or as persistent services using `systemd`.
-    - The `src/tick_collector.py` script is the primary process that runs during market hours to collect live data and execute the live trading engine.
+    - **Activation**: After logging in and navigating to the project directory, the virtual environment must be activated for the session using `poetry shell`.
+    - **Automated Scripts**: The `src/tick_collector.py` script is the primary process that runs during market hours. It should be started as a persistent background process (e.g., using `nohup poetry run ... &`).
     - The Streamlit dashboard is generally not run in the production environment, as its purpose is analysis, which is done locally.
 
 ## Key Differences & Workflow
@@ -42,4 +47,3 @@ The standard workflow is:
 3.  **Commit** the changes to version control (Git).
 4.  **Deploy** the updated code to the EC2 instance.
 5.  **Run** the automated processes in the production environment.
-

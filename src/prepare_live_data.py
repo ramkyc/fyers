@@ -15,6 +15,8 @@ if project_root not in sys.path:
 import config
 from src.fetch_historical_data import get_top_nifty_stocks, get_atm_option_symbols
 from src.auth import get_fyers_model, get_access_token
+from src.fetch_symbol_master import fetch_and_store_symbol_masters
+from src.strategies import STRATEGY_MAPPING
 
 def prepare_live_strategy_data():
     """
@@ -32,18 +34,38 @@ def prepare_live_strategy_data():
         return
 
     try:
-        # 1. Determine the symbols that will be traded today
+        # --- Daily Symbol Master Sync ---
+        # As per the user's request, we sync the master data once per day
+        # at the start of the pre-market preparation process.
+        fetch_and_store_symbol_masters()
+
+        # 1. Load the live configuration to see which strategy is selected
+        from src.live_config_manager import load_config
+        live_config, msg = load_config()
+        if not live_config:
+            print(f"Could not prepare live data: {msg}")
+            return
+
+        # 2. Instantiate the strategy to ask it what data it needs
+        strategy_class = STRATEGY_MAPPING.get(live_config['strategy'])
+        if not strategy_class:
+            print(f"Strategy '{live_config['strategy']}' not found. Cannot prepare data.")
+            return
+        
+        # We instantiate it with dummy portfolio/oms because we only need its parameters
+        strategy_instance = strategy_class(symbols=[], portfolio=None, order_manager=None, params=live_config['params'])
+        required_resolutions = strategy_instance.get_required_resolutions()
+        print(f"Strategy '{live_config['strategy']}' requires resolutions: {required_resolutions}")
+
+        # 3. Determine the symbols that will be traded today
         fyers_model = get_fyers_model(get_access_token())
         tradeable_symbols = get_top_nifty_stocks(top_n=50)
         atm_options = get_atm_option_symbols(fyers_model)
         symbols_to_prepare = tradeable_symbols + atm_options
 
-        # For now, we assume strategies need 1-minute bars. A more advanced
-        # system could determine required resolutions from the strategy itself.
-        required_resolution = '1'
         required_history_len = 100 # A safe number to cover most lookback periods
 
-        # 2. Connect to databases
+        # 4. Connect to databases
         hist_con = sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True)
         live_con = sqlite3.connect(config.LIVE_MARKET_DB_FILE)
         live_cursor = live_con.cursor()
@@ -59,30 +81,29 @@ def prepare_live_strategy_data():
             );
         """)
 
-        # 3. Clear the old data from the live strategy table
+        # 5. Clear the old data from the live strategy table
         live_cursor.execute("DELETE FROM live_strategy_data;")
         print("Cleared old live strategy data.")
 
-        # 4. Fetch recent history for each symbol and insert into the live table
-        for symbol in symbols_to_prepare:
-            query = """
-                SELECT timestamp, symbol, open, high, low, close, volume
-                FROM historical_data
-                WHERE symbol = ? AND resolution = ?
-                ORDER BY timestamp DESC
-                LIMIT ?;
-            """
-            df = pd.read_sql_query(query, hist_con, params=(symbol, required_resolution, required_history_len))
+        # 6. Fetch recent history for each symbol and resolution and insert into the live table
+        for resolution in required_resolutions:
+            for symbol in symbols_to_prepare:
+                query = """
+                    SELECT timestamp, symbol, open, high, low, close, volume
+                    FROM historical_data
+                    WHERE symbol = ? AND resolution = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?;
+                """
+                df = pd.read_sql_query(query, hist_con, params=(symbol, resolution, required_history_len))
 
-            if not df.empty:
-                # Add the resolution column for the new table schema
-                df['resolution'] = required_resolution
-                # Reorder columns to match the live_strategy_data table
-                df = df[['timestamp', 'symbol', 'resolution', 'open', 'high', 'low', 'close', 'volume']]
-                df.to_sql('live_strategy_data', live_con, if_exists='append', index=False)
-                print(f"  - Prepared {len(df)} bars for {symbol}.")
+                if not df.empty:
+                    df['resolution'] = resolution
+                    df = df[['timestamp', 'symbol', 'resolution', 'open', 'high', 'low', 'close', 'volume']]
+                    df.to_sql('live_strategy_data', live_con, if_exists='append', index=False)
+                    print(f"  - Prepared {len(df)} bars for {symbol} at {resolution} resolution.")
 
-        # 5. Save the full list of prepared symbols for the dashboard to use
+        # 7. Save the full list of prepared symbols for the dashboard to use
         live_symbols_file = os.path.join(config.DATA_DIR, 'live_symbols.json')
         with open(live_symbols_file, 'w') as f:
             json.dump(symbols_to_prepare, f)
@@ -90,7 +111,7 @@ def prepare_live_strategy_data():
 
         live_con.commit()
 
-        # 5. Create the marker file to indicate successful preparation
+        # 8. Create the marker file to indicate successful preparation
         with open(marker_file, 'w') as f:
             f.write(f"Data prepared at {datetime.datetime.now()}")
         print(f"Successfully created marker file: {marker_file}")

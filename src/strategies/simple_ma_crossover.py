@@ -69,6 +69,12 @@ class SMACrossoverStrategy(BaseStrategy):
         long_windows = range(opt_params['long_window'][0], opt_params['long_window'][1] + 1, opt_params.get('long_window_step', 1))
         return [{'short_window': sw, 'long_window': lw} for sw in short_windows for lw in long_windows if sw < lw]
 
+    def get_required_resolutions(self) -> list[str]:
+        """
+        This strategy operates on its primary resolution.
+        """
+        return [self.primary_resolution]
+
     def _log_live_decision_data(self, symbol: str, timestamp: datetime.datetime, data: dict):
         """Helper to log the data used for making a live trade decision."""
         def _format_float(value):

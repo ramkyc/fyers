@@ -148,14 +148,6 @@ This area appears right after you click "Run Backtest" and shows the results for
     -   **Purpose:** This is the detailed, step-by-step "console output" from the backtesting engine. It shows every signal generated, every order placement, and any intraday exit messages.
     -   **When to use it:** This is your primary tool for **deep debugging**. If a trade didn't happen when you thought it should have, this log will tell you why.
 
-#### Trading Activity Logs (Permanent Archive)
--   **Entry Point**: `src/tick_collector.py`
--   **Functionality**:
-    -   At 9:14 AM on market days, it starts the `LiveTradingEngine`.
-    -   The engine connects to the Fyers WebSocket, subscribes to symbols, and feeds live ticks to the selected strategy.
-    -   At 3:31 PM, it stops the engine.
-    -   At 4:00 PM, it runs the `src/archive_live_data.py` script, which moves the day's captured ticks from the temporary `live_market_data.sqlite` to the permanent `historical_market_data.sqlite` and clears the live table for the next day.
-
 ### Running Live Paper Trading
 
 The "Live Paper Trading Monitor" tab on the dashboard is your control center for simulated live trading.

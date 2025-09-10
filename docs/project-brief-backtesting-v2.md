@@ -1,0 +1,103 @@
+# Project Brief: Backtesting Dashboard V2
+
+**Document Date:** 2025-09-10
+**Author:** ramakrishna
+**Facilitator:** Gemini Code Assist
+
+## 1. Overview & Goals
+
+This document outlines the next generation of enhancements for the TraderBuddy backtesting dashboard. The core goal is to evolve the backtesting UI from a tool that runs a single test into a comprehensive research environment. This will enable more complex analysis, such as comparing multiple strategies or the same strategy across different timeframes, all from a single, intuitive interface.
+
+The key themes are **flexibility**, **comparative analysis**, and **detailed, drill-down reporting**.
+
+---
+
+## 2. Core Features & Requirements
+
+### Epic 1: Multi-Vector Analysis
+
+The user should be able to run backtests across multiple dimensions simultaneously.
+
+*   **Multi-Timeframe Selection:**
+    *   The "Select Resolution" dropdown should be renamed to "Select Timeframe(s)".
+    *   This should be converted to a multi-select box, allowing the user to choose one or more timeframes (e.g., '15', '60', 'D').
+    *   The backtesting engine will treat each selected timeframe as a separate, independent backtest run for the chosen symbols and strategies.
+
+*   **Multi-Strategy Selection:**
+    *   The "Select Strategy" dropdown should also be converted to a multi-select box.
+    *   This will allow the user to run the same set of symbols/timeframes against multiple strategies for direct performance comparison.
+
+### Epic 2: Advanced Strategy & Risk Configuration
+
+The configuration of strategies should be more dynamic and granular.
+
+*   **Dynamic Parameter UI:**
+    *   When one or more strategies are selected, the "Strategy Parameters" section should dynamically generate a configuration box for each one.
+    *   **Filters / Indicators:** Within each strategy's configuration box, there should be a dropdown to select the specific indicators or filters the strategy uses (e.g., allowing a user to choose between an SMA, EMA, or WMA as a trend filter). This implies that strategies need to be refactored to accept indicators as parameters.
+
+*   **Granular Risk Controls:**
+    *   The Stop-Loss (SL) and Target settings should be enclosed in their own distinct UI box within each strategy's configuration for better visual organization.
+    *   The "Capital Deployment" section should be simplified to clearly state it represents the capital to be deployed for each new position.
+
+### Epic 3: Enhanced UI/UX and Reporting
+
+The user interface layout and results display should be made more intuitive and powerful.
+
+*   **Sidebar Layout:**
+    *   The date/time selection controls should be the first items in the sidebar, establishing the overall context of the backtest before other parameters are chosen.
+
+*   **Drill-Down Reporting:**
+    *   The results display (Equity Curve, Trade Log, Raw Backtest Log) should be refactored.
+    *   Instead of a single aggregated view, the results should be presented in a tabbed interface.
+    *   The user should be able to drill down and view the results for each specific combination of `Symbol` -> `Timeframe` -> `Strategy`.
+
+### Epic 4: Advanced Parameter Optimization
+
+The optimization feature should be more powerful and context-aware.
+
+*   **Contextual Display:** The "Enable Parameter Optimization" checkbox should only be visible when a **single strategy** is selected.
+*   **Expanded Scope:** When enabled, the optimization should run across all configurable parameters, **including the new selectable "Filters / Indicators"**.
+*   **Sorted Results:** The final optimization results table must be sorted from best to worst performing combination based on a user-selectable metric (e.g., Sharpe Ratio, Total P&L).
+
+---
+
+## 3. Clarifications & Analysis
+
+### How are filters/indicators calculated?
+
+*   **Question:** When a filter is chosen, how is it being calculated? In memory? Or is it being stored in the database?
+*   **Answer:** All technical indicators (like EMA, SMA, ATR) are currently calculated **in-memory, on-the-fly** during each backtest run.
+    *   **Process:** The backtesting engine loads the raw OHLCV data from the database. It passes this data as a pandas DataFrame to the strategy's `on_data` method. The strategy then uses a library like `pandas-ta` to compute the required indicators for that specific run.
+    *   **Rationale:** This is a highly flexible and efficient approach for backtesting. It allows for rapid iteration on strategy parameters (e.g., changing an EMA from 21 to 25 periods) without needing to pre-calculate and store every possible indicator combination in the database, which would be computationally expensive and require massive storage.
+
+### Positional vs. Intraday Backtest Types
+
+*   **Requirement Confirmation:** The existing behavior is correct and should be maintained.
+    *   **Positional:** Positions are held across multiple days until an explicit exit signal (profit target or stop-loss) is generated by the strategy.
+    *   **Intraday:** Any positions that are still open at a specific time (e.g., 15:15) are force-closed by the backtesting engine, regardless of the strategy's logic.
+
+### Backtest Configuration Flow
+
+*   **Question:** After I choose all the parameters for backtesting, what exactly is happening? Is a `.json` or `.yaml` file being prepared?
+*   **Answer:** No configuration file is created for backtesting. The parameters selected in the Streamlit UI (symbols, date range, strategy parameters, etc.) are collected and held in memory. They are passed directly as arguments to the `BacktestingEngine` when the "Run Backtest" button is clicked. This in-memory approach is efficient for the iterative and experimental nature of backtesting. It contrasts with the live trading setup, which *does* use a persistent `live_config.yaml` file to control the separate, long-running engine process.
+
+### Trade Log Architecture
+
+*   **Suggestion:** Why not separate the trade logs for backtesting, paper trading, and (future) real trades into different tables?
+*   **Current System:** The system currently uses a single table, `paper_trades`, within the `trading_log.sqlite` database. All trades are stored here. The `run_id` column is used to distinguish between different types of runs (e.g., `bt_...` for backtests, `live_...` for live paper trades).
+*   **Analysis of Suggestion:** This is an excellent architectural point. Using separate tables (e.g., `backtest_trades`, `papertrade_trades`, `real_trades`) is a valid design pattern with clear benefits:
+    *   **Data Integrity:** It creates a stronger logical and physical separation of data, reducing the risk of accidentally mixing analysis across different trading modes.
+    *   **Query Simplicity:** Queries would be simpler and potentially faster, as they would not require `LIKE` clauses on the `run_id`.
+    *   **Scalability:** It provides a clean and scalable path for introducing real-money trading logs in the future without altering existing tables.
+*   **Recommendation:** This suggestion should be adopted as part of the V2 implementation. It will require refactoring the `OrderManager` and the data loading functions in the UI, but the long-term benefits to clarity and maintainability are significant.
+
+---
+
+## 4. High-Level Implementation Sketch
+
+Implementing these features will require changes across the backtesting and UI components of the application.
+
+*   **`src/backtesting/engine.py`**: Will need to be updated to handle the new loop structure for multi-timeframe and multi-strategy tests.
+*   **`src/strategies/*.py`**: Strategy classes will need significant refactoring to accept indicators as parameters rather than having them hardcoded.
+*   **`web_ui/backtesting_ui.py`**: Will require a major overhaul to implement the new multi-select controls, dynamic UI generation for strategy parameters, and the new tabbed, drill-down results display.
+*   **`web_ui/utils.py`**: May require new helper functions to support the enhanced results display.

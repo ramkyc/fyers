@@ -39,6 +39,9 @@ def display_optimization_results(results_df):
                     colorbar=dict(title=vis_metric, titleside='right')
                 ))
                 fig_heatmap.update_layout(title=f'Strategy Performance Landscape ({vis_metric})', xaxis_title=param_cols[1], yaxis_title=param_cols[0])
+                # NOTE: As of Streamlit v1.49, this widget shows a deprecation warning for 'use_container_width'.
+                # However, the recommended 'width' parameter is not yet supported for this widget.
+                # We will keep using 'use_container_width' until it is fully deprecated.
                 st.plotly_chart(fig_heatmap, use_container_width=True)
             with tab3:
                 st.subheader(f"{vis_metric} 3D Surface Plot")
@@ -138,7 +141,7 @@ def render_page():
         strategy_params['trade_value'] = st.number_input("Trade Value (INR)", min_value=1000.0, value=25000.0, step=1000.0, key="bt_common_trade_value")
         initial_cash = st.number_input("Initial Cash", min_value=1000.0, value=200000.0, step=1000.0)
         
-        run_button_clicked = st.form_submit_button(run_button_label, use_container_width=True)
+        run_button_clicked = st.form_submit_button(run_button_label, width='stretch')
         if run_button_clicked:
             st.session_state.run_button_clicked = True
 

@@ -65,6 +65,14 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             {'name': 'ema_slow', 'label': 'EMA Slow Range', 'type': 'slider', 'min': 10, 'max': 50, 'default': (15, 25), 'step': 1}
         ]
 
+    def get_required_resolutions(self) -> list[str]:
+        """
+        This strategy needs its primary resolution, plus Daily and 1-minute data
+        for its open price and implied crossover calculations.
+        """
+        required = {self.primary_resolution, "D", "1"}
+        return sorted(list(required), key=lambda x: (x != self.primary_resolution, x))
+
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         """
         Called for each new data bar.

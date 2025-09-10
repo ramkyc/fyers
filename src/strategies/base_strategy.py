@@ -39,6 +39,15 @@ class BaseStrategy(ABC):
         # Subclasses should override this.
         return []
 
+    def get_required_resolutions(self) -> list[str]:
+        """
+        Returns a list of data resolutions required by the strategy for its warm-up.
+        The first resolution in the list is assumed to be the primary one.
+        Subclasses should override this to specify their data needs.
+        """
+        # Default to 1-minute data if not specified.
+        return ["1"]
+
     @abstractmethod
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         """

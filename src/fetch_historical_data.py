@@ -12,6 +12,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.auth import get_fyers_model, get_access_token
+from src.market_calendar import is_market_working_day, get_trading_holidays
 import config # config.py is now in the project root
 
 URL = "https://iislliveblob.niftyindices.com/jsonfiles/HeatmapDetail/FinalHeatmapNIFTY%2050.json"
@@ -174,15 +175,99 @@ def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list,
             con.close()
             print(f"Connection closed for symbol {symbol}.")
 
+def get_historical_expiry(trade_date: datetime.date, index_name: str) -> datetime.date:
+    """
+    Calculates the nearest future expiry date for a given historical trade date.
+    NOTE: This is a simplified implementation. A production system would need a more robust
+    holiday calendar and handling for expiry day shifts.
+    """
+    holidays = get_trading_holidays(trade_date.year)
+    
+    # NIFTY & BANKNIFTY have weekly expiries on Thursdays
+    if index_name in ["NIFTY", "BANKNIFTY"]:
+        days_to_thursday = (3 - trade_date.weekday() + 7) % 7
+        expiry_date = trade_date + datetime.timedelta(days=days_to_thursday)
+        # If expiry falls on a holiday, move to the previous working day
+        while expiry_date in holidays or expiry_date.weekday() >= 5:
+            expiry_date -= datetime.timedelta(days=1)
+        return expiry_date
+        
+    # SENSEX & BANKEX have monthly expiries on the last Friday
+    elif index_name in ["SENSEX", "BANKEX"]:
+        # Find the last day of the month
+        next_month = trade_date.replace(day=28) + datetime.timedelta(days=4)
+        last_day_of_month = next_month - datetime.timedelta(days=next_month.day)
+        
+        # Find the last Friday of the month
+        expiry_date = last_day_of_month
+        while expiry_date.weekday() != 4: # 4 is Friday
+            expiry_date -= datetime.timedelta(days=1)
+            
+        # If expiry falls on a holiday, move to the previous working day
+        while expiry_date in holidays or expiry_date.weekday() >= 5:
+            expiry_date -= datetime.timedelta(days=1)
+        return expiry_date
+        
+    return None
 
-def _get_bse_month_code(month: int) -> str:
-    """Converts a month number to the standard single-character futures/options code."""
-    return {
-        1: 'F', 2: 'G', 3: 'H',
-        4: 'J', 5: 'K', 6: 'M',
-        7: 'N', 8: 'Q', 9: 'U',
-        10: 'V', 11: 'X', 12: 'Z'
-    }.get(month, '')
+def fetch_historical_options_data(fyers: fyersModel.FyersModel, start_date: datetime.date, end_date: datetime.date):
+    """
+    Fetches historical 1-minute data for ATM options for a given date range.
+    """
+    print("\n--- Starting Historical Options Data Fetch ---")
+    
+    indices = {
+        "NIFTY": {"symbol": "NSE:NIFTY50-INDEX", "strike_interval": 100, "name": "NIFTY", "exchange": "NSE"},
+        "BANKNIFTY": {"symbol": "NSE:NIFTYBANK-INDEX", "strike_interval": 100, "name": "BANKNIFTY", "exchange": "NSE"},
+    }
+    
+    current_date = start_date
+    while current_date <= end_date:
+        if not is_market_working_day(current_date):
+            current_date += datetime.timedelta(days=1)
+            continue
+            
+        print(f"\nProcessing options for date: {current_date.strftime('%Y-%m-%d')}")
+        
+        for index_name, index_data in indices.items():
+            try:
+                # 1. Get the opening price of the index for that day to find the ATM strike
+                hist_data = {
+                    "symbol": index_data["symbol"], "resolution": "1", "date_format": "1",
+                    "range_from": current_date.strftime("%Y-%m-%d"), "range_to": current_date.strftime("%Y-%m-%d"), "cont_flag": "1"
+                }
+                response = fyers.history(data=hist_data)
+                
+                if not (response.get("code") == 200 and response.get("candles")):
+                    print(f"  - Could not fetch index price for {index_name} on {current_date}. Skipping.")
+                    continue
+                
+                open_price = response["candles"][0][1] # Get the open of the first 1-min candle
+                atm_strike = round(open_price / index_data["strike_interval"]) * index_data["strike_interval"]
+                
+                # 2. Calculate the historical expiry date
+                expiry_date = get_historical_expiry(current_date, index_name)
+                if not expiry_date:
+                    continue
+                
+                # 3. Construct the option symbols
+                year = str(expiry_date.year)[-2:]
+                month = expiry_date.strftime("%b").upper()
+                
+                ce_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}CE"
+                pe_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}PE"
+                
+                # 4. Fetch and store data for these two option symbols for the current day
+                for option_symbol in [ce_symbol, pe_symbol]:
+                    with sqlite3.connect(config.HISTORICAL_MARKET_DB_FILE) as con:
+                        cursor = con.cursor()
+                        _fetch_and_store_chunk(fyers, option_symbol, "1", current_date, current_date, cursor)
+                        con.commit()
+                        
+            except Exception as e:
+                print(f"  - Error processing {index_name} for {current_date}: {e}")
+
+        current_date += datetime.timedelta(days=1)
 
 
 def get_atm_option_symbols(fyers: fyersModel.FyersModel):
@@ -271,6 +356,14 @@ if __name__ == "__main__":
             symbols=symbols_to_fetch,
             resolutions=resolutions_to_fetch
         )
+
+        # 5. Fetch historical data for ATM options for the last 100 days
+        # This will populate the database for the live engine's warm-up process.
+        print("\n-------------------- Starting Historical Options Data Fetch --------------------")
+        end_date_options = datetime.date.today()
+        start_date_options = end_date_options - datetime.timedelta(days=100)
+        fetch_historical_options_data(fyers, start_date_options, end_date_options)
+        print("-------------------- Historical Options Data Fetch Complete --------------------")
 
         print("-------------------- Historical Data Fetch Complete --------------------")
 

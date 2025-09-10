@@ -26,10 +26,16 @@ def render_page():
 
         # Use the new function to get today's relevant symbols
         all_symbols = get_live_tradeable_symbols()
+        
+        # Filter the previously saved symbols to ensure they are still valid options today.
+        # This prevents errors if an old option symbol from a previous day is no longer relevant.
+        saved_symbols = current_config.get('symbols', [])
+        valid_default_symbols = [s for s in saved_symbols if s in all_symbols]
+
         selected_symbols = st.multiselect(
             "Select Symbols to Trade",
             options=all_symbols,
-            default=current_config.get('symbols', [])
+            default=valid_default_symbols
         )
 
         st.subheader("Strategy Parameters")
@@ -53,7 +59,7 @@ def render_page():
         
         live_params['trade_value'] = st.number_input("Trade Value (INR)", min_value=1000, max_value=100000, value=current_config.get('params', {}).get('trade_value', 25000), step=1000, key="live_common_val")
 
-        submitted = st.form_submit_button("Save Live Configuration", use_container_width=True)
+        submitted = st.form_submit_button("Save Live Configuration", width='stretch')
         if submitted:
             new_config = {
                 'strategy': selected_strategy,
@@ -73,18 +79,18 @@ def render_page():
         _, st.session_state.is_engine_running = get_engine_status()
 
     col1, col2, col3 = st.columns(3)
-    if col1.button("Start Live Engine", disabled=st.session_state.is_engine_running, use_container_width=True):
+    if col1.button("Start Live Engine", disabled=st.session_state.is_engine_running, width='stretch'):
         with st.spinner("Attempting to start..."):
             success, message = start_engine()
             st.session_state.is_engine_running = success
             st.rerun()
-    if col2.button("Stop Live Engine", disabled=not st.session_state.is_engine_running, use_container_width=True):
+    if col2.button("Stop Live Engine", disabled=not st.session_state.is_engine_running, width='stretch'):
         with st.spinner("Sending stop signal..."):
             stop_engine()
             st.session_state.is_engine_running = False
             time.sleep(2)
             st.rerun()
-    if col3.button("Stop and Restart", disabled=not st.session_state.is_engine_running, use_container_width=True, type="primary"):
+    if col3.button("Stop and Restart", disabled=not st.session_state.is_engine_running, width='stretch', type="primary"):
         with st.spinner("Restarting engine..."):
             stop_engine()
             time.sleep(3)
@@ -123,6 +129,8 @@ def render_page():
         
         st.subheader(f"Trade Log for Run: `{selected_run_id}`")
         trade_log_df = load_log_data("SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;", params=(selected_run_id,))
+        # NOTE: As of Streamlit v1.49, this widget may show a deprecation warning for 'use_container_width'.
+        # However, the recommended 'width' parameter is not yet supported for this widget.
         st.dataframe(trade_log_df, use_container_width=True)
 
     # --- Auto-refreshing logic ---
