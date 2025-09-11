@@ -24,11 +24,13 @@ class PerformanceAnalyzer:
         realized_pnl_list = []
 
         for trade in trades:
-            symbol = trade['symbol']
+            symbol = trade.get('symbol')
+            timeframe = trade.get('timeframe', 'D') # Default for old data
+            position_key = (symbol, timeframe)
             
             if trade['action'] == 'BUY':
                 # Add buy trade to the queue for that symbol
-                open_positions[symbol].append({
+                open_positions[position_key].append({
                     'quantity': trade['quantity'],
                     'price': trade['price']
                 })
@@ -36,8 +38,8 @@ class PerformanceAnalyzer:
                 sell_quantity = abs(trade['quantity'])
                 sell_price = trade['price']
                 
-                while sell_quantity > 0 and open_positions[symbol]:
-                    buy_trade = open_positions[symbol][0]
+                while sell_quantity > 0 and open_positions[position_key]:
+                    buy_trade = open_positions[position_key][0]
                     
                     # Determine the quantity to match
                     matched_quantity = min(sell_quantity, buy_trade['quantity'])
@@ -52,7 +54,7 @@ class PerformanceAnalyzer:
                     
                     # If the buy trade is fully closed, remove it from the queue
                     if buy_trade['quantity'] == 0:
-                        open_positions[symbol].popleft()
+                        open_positions[position_key].popleft()
 
                 if sell_quantity > 0:
                     # This case implies a short sale which we are not currently tracking P&L for
@@ -206,11 +208,11 @@ class PerformanceAnalyzer:
         if not self.portfolio.positions:
             print("  <No open positions>")
         else:
-            for symbol, data in self.portfolio.positions.items():
+            for (symbol, timeframe), data in self.portfolio.positions.items():
                 last_price = final_prices.get(symbol, data['avg_price'])
                 market_value = data['quantity'] * last_price
                 pnl = market_value - (data['quantity'] * data['avg_price'])
-                print(f"  - {symbol}: {data['quantity']} shares @ avg {data['avg_price']:.2f} | Mkt Value: {market_value:,.2f} | P&L: {pnl:,.2f}")
+                print(f"  - {symbol} ({timeframe}): {data['quantity']} shares @ avg {data['avg_price']:.2f} | Mkt Value: {market_value:,.2f} | P&L: {pnl:,.2f}")
 
         print("\n--- Trade Log ---")
         if not self.portfolio.trades:

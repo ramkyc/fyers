@@ -8,15 +8,25 @@ from typing import Dict
 import sys
 import sys
 
-from src.strategies.base_strategy import BaseStrategy
+from strategies.base_strategy import BaseStrategy
+from src.symbol_manager import SymbolManager
 
 class OpeningPriceCrossoverStrategy(BaseStrategy):
     """
-    A long-only strategy that enters when the price crosses above the candle's open,
-    filtered by a 9/21 EMA crossover.
+    A long-only momentum strategy with a multi-faceted entry filter.
+
+    Core Logic:
+    - Enters a long position when a bullish EMA crossover (e.g., 9 over 21) is present.
+    - The primary filter is based on the instrument's relationship with its daily open price,
+      which serves as a proxy for intraday sentiment.
+
+    Options Trading Logic:
+    - For options, the strategy's sentiment filter is based on the **underlying index's** daily open, not the option's.
+    - **Call (CE) options** are treated like stocks: an entry is considered only if the underlying index is trading ABOVE its daily open (bullish sentiment).
+    - **Put (PE) options** have inverted logic: an entry is considered only if the underlying index is trading BELOW its daily open (bearish sentiment).
     """
 
-    def __init__(self, symbols: list[str], portfolio: 'Portfolio', order_manager: 'OrderManager', params: dict[str, object] = None, resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'PT_Portfolio', order_manager: 'OrderManager', params: dict[str, object] = None, resolutions: list[str] = None):
         """
         Initializes the Opening Price Crossover Strategy.
         """
@@ -42,6 +52,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.primary_resolution = resolutions[0] if resolutions else "1"
 
         # In-memory state for the strategy
+        self.symbol_manager = SymbolManager() # For getting underlying info
         self.active_trades = {symbol: None for symbol in self.symbols}
         # State for live trading to track daily open
         self.daily_open_prices = {symbol: None for symbol in self.symbols}
@@ -98,13 +109,24 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 self.daily_open_prices[symbol] = df['open'].iloc[-1]
                 self.last_processed_day[symbol] = current_day
             
-            daily_open_price = self.daily_open_prices.get(symbol)
-            
-            # For backtesting, we can get it directly if provided
-            if not is_live and "D" in market_data_all_resolutions:
-                daily_data = market_data_all_resolutions.get("D", {}).get(symbol, {})
-                daily_open_price = daily_data.get('open', daily_open_price) # Fallback to tracked price
+            # --- V3: Intelligent Daily Open Price Logic ---
+            daily_open_price = 0
+            underlying_symbol = self.symbol_manager.get_underlying_for_option(symbol)
 
+            if underlying_symbol: # It's an option
+                # For options, use the daily open of the underlying index.
+                if is_live:
+                    # In live, we don't have a direct feed for index daily open, so we track it.
+                    # This part needs a more robust implementation if live option trading is a priority.
+                    # For now, we'll rely on the backtest logic which is more accurate.
+                    daily_open_price = self.daily_open_prices.get(underlying_symbol, 0)
+                else: # In backtest
+                    daily_data = market_data_all_resolutions.get("D", {}).get(underlying_symbol, {})
+                    daily_open_price = daily_data.get('open', 0)
+            else: # It's a stock
+                daily_data = market_data_all_resolutions.get("D", {}).get(symbol, {})
+                daily_open_price = daily_data.get('open', 0)
+            
             # Ensure we have enough data to calculate indicators
             if len(df) < self.ema_slow_period or daily_open_price == 0:
                 continue
@@ -120,10 +142,11 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             
             ema_fast = latest[f'EMA_{self.ema_fast_period}']
             ema_slow = latest[f'EMA_{self.ema_slow_period}']
-            atr_value = latest[f'ATRr_{self.atr_period}']
+            # Use a default ATR of 0 if the column doesn't exist (e.g., not enough data)
+            atr_value = latest.get(f'ATRr_{self.atr_period}', 0)
 
             # --- Position Management ---
-            active_trade = self.portfolio.positions.get(symbol)
+            active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
             
             # 1. Check for Exits if a position is open
             if active_trade and active_trade['quantity'] > 0:
@@ -133,7 +156,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 # Check Target 3 first (highest target)
                 if not trade_details.get('t3_hit', False) and latest['high'] >= trade_details['target3']:
                     self._log_debug(f"{timestamp} | {symbol} | EXIT T3: Selling remaining {active_trade['quantity']} shares at {trade_details['target3']}")
-                    self.sell(symbol, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
+                    self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
 
@@ -142,7 +165,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                     qty_to_sell_t2 = int(trade_details['initial_quantity'] * self.exit_percent_target2)
                     if qty_to_sell_t2 > 0 and active_trade['quantity'] >= qty_to_sell_t2:
                         self._log_debug(f"{timestamp} | {symbol} | EXIT T2: Selling {qty_to_sell_t2} shares at {trade_details['target2']}")
-                        self.sell(symbol, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
+                        self.sell(symbol, self.primary_resolution, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
                         trade_details['t2_hit'] = True
 
                 # Check Target 1
@@ -150,13 +173,13 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                     qty_to_sell = int(trade_details['initial_quantity'] * self.exit_percent_target1)
                     if qty_to_sell > 0 and active_trade['quantity'] >= qty_to_sell:
                         self._log_debug(f"{timestamp} | {symbol} | EXIT T1: Selling {qty_to_sell} shares at {trade_details['target1']}")
-                        self.sell(symbol, qty_to_sell, trade_details['target1'], timestamp, is_live)
+                        self.sell(symbol, self.primary_resolution, qty_to_sell, trade_details['target1'], timestamp, is_live)
                         trade_details['t1_hit'] = True
 
                 # Check Stop Loss
                 if latest['low'] <= trade_details['stop_loss']:
                     self._log_debug(f"{timestamp} | {symbol} | EXIT SL: Selling remaining {active_trade['quantity']} shares at {trade_details['stop_loss']}")
-                    self.sell(symbol, active_trade['quantity'], trade_details['stop_loss'], timestamp, is_live)
+                    self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['stop_loss'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
             
@@ -164,7 +187,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             else:
                 # --- Entry Conditions ---
                 is_ema_bullish = ema_fast > ema_slow
-                is_price_bullish = latest['close'] > latest['open']
+                is_price_bullish = latest['close'] >= latest['open']
 
                 # Use the accurate live count if available, otherwise use the backtest's implied count.
                 crossover_count = 0
@@ -180,7 +203,18 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 
                 average_implied_crossover_count = sum(self.implied_crossover_history[symbol]) / len(self.implied_crossover_history[symbol]) if self.implied_crossover_history[symbol] else 0
 
-                if is_ema_bullish and is_price_bullish and crossover_count > average_implied_crossover_count:
+                # --- V4: Sentiment Filter (Correctly handles Puts) ---
+                sentiment_filter_passed = False
+                is_put_option = "PE" in symbol.upper()
+
+                if is_put_option:
+                    # For Puts, we want weakness. The underlying should be BELOW its open.
+                    sentiment_filter_passed = latest['close'] < daily_open_price
+                else:
+                    # For Calls/Stocks, we want strength. The underlying should be ABOVE its open.
+                    sentiment_filter_passed = latest['close'] > daily_open_price
+
+                if is_ema_bullish and is_price_bullish and sentiment_filter_passed:
                     entry_price = latest['close']
                     
                     # New dynamic stop-loss calculation
@@ -196,11 +230,12 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                     
                     # Dynamic quantity calculation based on trade value
                     if entry_price > 0:
-                        quantity = int(self.trade_value / entry_price)
+                        capital_to_deploy = self.portfolio.get_capital_for_position(symbol, self.primary_resolution, self.trade_value)
+                        quantity = int(capital_to_deploy / entry_price)
 
                         if quantity > 0:
                             self._log_debug(f"{timestamp} | {symbol} | ENTRY: Buying {quantity} shares at {entry_price:.2f}")
-                            self.buy(symbol, quantity, entry_price, timestamp, is_live)
+                            self.buy(symbol, self.primary_resolution, quantity, entry_price, timestamp, is_live)
                             self.active_trades[symbol] = {
                                 'stop_loss': stop_loss,
                                 'target1': target1,

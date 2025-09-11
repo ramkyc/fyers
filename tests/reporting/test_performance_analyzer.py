@@ -2,13 +2,8 @@
 
 import pytest
 import datetime
-import sys
-import os
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
-from src.paper_trading.portfolio import Portfolio
-from src.reporting.performance_analyzer import PerformanceAnalyzer
+from paper_trading.portfolio import Portfolio
+from reporting.performance_analyzer import PerformanceAnalyzer
 
 @pytest.fixture
 def populated_portfolio():
@@ -17,14 +12,14 @@ def populated_portfolio():
 
     # Simulate some trades
     # Trade 1: Buy SBIN, then sell for profit
-    portfolio.execute_order("NSE:SBIN-EQ", 'BUY', 10, 500.0, timestamp)
-    portfolio.execute_order("NSE:SBIN-EQ", 'SELL', 10, 510.0, timestamp + datetime.timedelta(minutes=10))
+    portfolio.execute_order("NSE:SBIN-EQ", 'D', 'BUY', 10, 500.0, timestamp)
+    portfolio.execute_order("NSE:SBIN-EQ", 'D', 'SELL', 10, 510.0, timestamp + datetime.timedelta(minutes=10))
 
     # Trade 2: Buy RELIANCE, still open, unrealized loss
-    portfolio.execute_order("NSE:RELIANCE-EQ", 'BUY', 5, 2500.0, timestamp + datetime.timedelta(minutes=20))
+    portfolio.execute_order("NSE:RELIANCE-EQ", '15', 'BUY', 5, 2500.0, timestamp + datetime.timedelta(minutes=20))
 
     # Trade 3: Buy HDFCBANK, still open, unrealized profit
-    portfolio.execute_order("NSE:HDFCBANK-EQ", 'BUY', 20, 1500.0, timestamp + datetime.timedelta(minutes=30))
+    portfolio.execute_order("NSE:HDFCBANK-EQ", '60', 'BUY', 20, 1500.0, timestamp + datetime.timedelta(minutes=30))
 
     return portfolio
 

@@ -54,6 +54,21 @@ def setup_databases():
                 );
             """)
             print("  - Table 'historical_ticks' is ready.")
+
+            # Table for symbol master data (lot sizes, etc.)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS symbol_master (
+                    symbol_ticker TEXT,
+                    symbol_details TEXT,
+                    lot_size INTEGER,
+                    instrument_type TEXT,
+                    underlying_id TEXT,
+                    strike_price REAL,
+                    option_type TEXT,
+                    expiry_date TEXT
+                );
+            """)
+            print("  - Table 'symbol_master' is ready.")
     except Exception as e:
         print(f"ERROR setting up historical market database: {e}")
 
@@ -72,6 +87,24 @@ def setup_databases():
                 );
             """)
             print("  - Table 'live_ticks' is ready.")
+
+            # Table for pre-populating strategy data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS live_strategy_data (
+                    timestamp TIMESTAMP, symbol TEXT, resolution TEXT,
+                    open REAL, high REAL, low REAL, close REAL, volume INTEGER,
+                    UNIQUE(symbol, resolution, timestamp)
+                );
+            """)
+            print("  - Table 'live_strategy_data' is ready.")
+
+            # Table for the live, forming candle for the UI
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS live_incomplete_bars (
+                    symbol TEXT PRIMARY KEY, timestamp TIMESTAMP, open REAL, high REAL, low REAL, close REAL, volume REAL
+                );
+            """)
+            print("  - Table 'live_incomplete_bars' is ready.")
     except Exception as e:
         print(f"ERROR setting up live market database: {e}")
 
@@ -111,6 +144,21 @@ def setup_databases():
             print("  - Table 'paper_trades' is ready.")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_log_run_id ON portfolio_log(run_id);")
             print("  - Table 'portfolio_log' is ready.")
+
+            # Table for live position tracking
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS live_positions (
+                    run_id TEXT,
+                    timestamp TIMESTAMP,
+                    symbol TEXT,
+                    timeframe TEXT,
+                    quantity INTEGER,
+                    avg_price REAL,
+                    ltp REAL,
+                    mtm REAL
+                );
+            """)
+            print("  - Table 'live_positions' is ready.")
 
             con.commit()
 

@@ -10,7 +10,7 @@ class BaseStrategy(ABC):
     Abstract base class for all trading strategies.
     """
 
-    def __init__(self, symbols: list[str], portfolio: 'Portfolio', order_manager: 'OrderManager' = None, params: dict[str, object] = None):
+    def __init__(self, symbols: list[str], portfolio: 'Portfolio', order_manager: 'OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None):
         """
         Initializes the strategy.
 
@@ -19,11 +19,13 @@ class BaseStrategy(ABC):
             portfolio (Portfolio): The portfolio object to interact with.
             order_manager (OrderManager, optional): The order manager object to execute trades.
             params (dict[str, object], optional): A dictionary of strategy-specific parameters.
+            resolutions (list[str], optional): The data resolutions used, with the first being primary.
         """
         self.symbols: list[str] = symbols
         self.portfolio = portfolio
         self.order_manager = order_manager
         self.params: dict[str, object] = params or {}
+        self.primary_resolution = resolutions[0] if resolutions else "1"
 
     @staticmethod
     def get_optimizable_params() -> list[dict]:
@@ -64,10 +66,11 @@ class BaseStrategy(ABC):
         
         pass
 
-    def buy(self, symbol: str, quantity: int, price: float, timestamp: datetime, is_live_trading: bool = False):
+    def buy(self, symbol: str, timeframe: str, quantity: int, price: float, timestamp: datetime, is_live_trading: bool = False):
         """Places a buy order."""
         signal = {
             'symbol': symbol,
+            'timeframe': timeframe,
             'action': 'BUY',
             'quantity': quantity,
             'price': price,
@@ -75,10 +78,11 @@ class BaseStrategy(ABC):
         }
         self.order_manager.execute_order(signal, is_live_trading)
 
-    def sell(self, symbol: str, quantity: int, price: float, timestamp: datetime, is_live_trading: bool = False):
+    def sell(self, symbol: str, timeframe: str, quantity: int, price: float, timestamp: datetime, is_live_trading: bool = False):
         """Places a sell order."""
         signal = {
             'symbol': symbol,
+            'timeframe': timeframe,
             'action': 'SELL',
             'quantity': quantity,
             'price': price,

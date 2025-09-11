@@ -30,9 +30,36 @@ This document outlines the different environments used for this project and the 
 - **Execution**:
     - **Activation**: After logging in and navigating to the project directory, the virtual environment must be activated for the session using `poetry shell`.
     - **Automated Scripts**: The `src/tick_collector.py` script is the primary process that runs during market hours. It should be started as a persistent background process (e.g., using `nohup poetry run ... &`).
-    - The Streamlit dashboard is generally not run in the production environment, as its purpose is analysis, which is done locally.
+    - The Streamlit dashboard can be run on the server for monitoring the live engine, but its primary purpose for heavy analysis and backtesting is best suited for the local development environment.
 
 ## Key Differences & Workflow
+
+### Standard Deployment Workflow (EC2)
+
+After committing and pushing changes from your local machine, follow these steps on the EC2 instance to deploy the update:
+
+1.  **Connect and Navigate**: SSH into the server and `cd` to the project directory.
+2.  **Update Code**: Force sync the local repository with the remote `main` branch.
+    ```bash
+    git fetch origin
+    git reset --hard origin/main
+    ```
+3.  **Sync Environment**: Activate the virtual environment (`poetry shell`) and install any new or updated dependencies. This is a safe and idempotent command.
+    ```bash
+    poetry install
+    ```
+4.  **Update Database Schema**: Run the database setup script. This is also safe and will only create tables if they don't exist.
+    ```bash
+    python src/db_setup.py
+    ```
+5.  **Restart the Live Engine**: Stop the old process and start the new one with the updated code.
+    ```bash
+    # Stop the old process
+    kill $(cat data/live_engine.pid)
+    sleep 5
+    # Start the new one
+    nohup python src/tick_collector.py &
+    ```
 
 | Feature             | Development (Local macOS)                               | Production (AWS EC2)                                  |
 |---------------------|---------------------------------------------------------|-------------------------------------------------------|

@@ -2,18 +2,11 @@
 
 import pytest
 import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, ANY
 from collections import defaultdict
 
-# Add project root to path
-import sys
-import os
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-from src.paper_trading.engine import LiveTradingEngine
-from src.strategies.base_strategy import BaseStrategy
+from paper_trading.engine import LiveTradingEngine
+from strategies.base_strategy import BaseStrategy
 
 # --- Mocks and Fixtures ---
 
@@ -67,6 +60,7 @@ def test_crossover_count_single_upward_cross(engine):
     # Arrange
     symbol = "TEST.NSE"
     ts = int(datetime.datetime.now().timestamp())
+    bar_end_ts = (ts // 60 + 1) * 60 # Timestamp for the end of the current minute
     
     # First tick sets the open price
     engine.on_message(create_tick_message(symbol, 100.0, ts))
@@ -81,6 +75,11 @@ def test_crossover_count_single_upward_cross(engine):
 
     # Assert
     assert engine.live_crossover_counts[symbol] == 1
+
+    # Now, complete the bar and check if the count is passed to the strategy and reset
+    engine.on_message(create_tick_message(symbol, 101.5, bar_end_ts + 1))
+    engine.strategies[0].on_data.assert_called_with(ANY, ANY, is_live_trading=True, live_crossover_count=1)
+    assert engine.live_crossover_counts[symbol] == 0 # Should reset after bar completion
 
 def test_crossover_count_multiple_crosses(engine):
     """Test that multiple crossovers are counted correctly."""

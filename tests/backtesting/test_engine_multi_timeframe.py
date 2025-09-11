@@ -1,6 +1,5 @@
 # tests/backtesting/test_engine_multi_timeframe.py
 
-import sys
 import os
 import pytest
 import pandas as pd
@@ -8,13 +7,8 @@ import datetime
 import sqlite3
 from unittest.mock import MagicMock, patch
 
-# Add the project root to the Python path to allow absolute imports from src
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-from src.backtesting.engine import BacktestingEngine
-from src.strategies.base_strategy import BaseStrategy
+from backtesting.engine import BacktestingEngine
+from strategies.base_strategy import BaseStrategy
 
 # Mock database file for testing
 @pytest.fixture
@@ -49,7 +43,7 @@ def mock_db_file(tmp_path):
 
 # Mock strategy to capture on_data calls
 class MockStrategy(BaseStrategy):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs): # resolutions=None is added to accept the kwarg
         super().__init__(*args, **kwargs)
         self.on_data_calls = []
 
@@ -95,7 +89,7 @@ def test_engine_passes_multi_resolution_data_to_strategy(mock_db_file):
     mock_strategy_instance = MockStrategy(symbols=['SYM1', 'SYM2'], portfolio=MagicMock(), order_manager=MagicMock())
     mock_strategy_instance.__class__.__name__ = "MockStrategy" # Set __name__ for printing in engine
     
-    with patch('src.strategies.base_strategy.BaseStrategy') as MockBaseStrategy:
+    with patch('strategies.base_strategy.BaseStrategy') as MockBaseStrategy:
         MockBaseStrategy.return_value = mock_strategy_instance
         MockBaseStrategy.__name__ = "MockStrategy" # Set __name__ for printing in engine
         engine.run(MockBaseStrategy, ['SYM1', 'SYM2'], {})
@@ -117,13 +111,14 @@ def test_engine_passes_multi_resolution_data_to_strategy(mock_db_file):
     assert not market_data['60']
 
     # Check content for 1-min data (should be empty for 00:00:00 timestamp)
-    assert not market_data['1']
+    # With the new logic, when primary is 'D', all 1-min data for that day is provided.
+    assert market_data['1']
 
     # Check content for Daily data
     assert 'SYM1' in market_data['D']
-    assert market_data['D']['SYM1']['close'] == 104 # From 2024-01-01 00:00:00
+    assert market_data['D']['SYM1'][0]['close'] == 104 # From 2024-01-01 00:00:00
 
-    # Now, test for a timestamp where 60-min and 1-min data exist
+    # Now, test for a timestamp where 60-min and 1-min data should exist
     engine = BacktestingEngine(
         start_datetime=datetime.datetime(2024, 1, 1, 9, 15, 0),
         end_datetime=datetime.datetime(2024, 1, 1, 9, 15, 0),
@@ -133,7 +128,7 @@ def test_engine_passes_multi_resolution_data_to_strategy(mock_db_file):
     mock_strategy_instance_2 = MockStrategy(symbols=['SYM1', 'SYM2'], portfolio=MagicMock(), order_manager=MagicMock())
     mock_strategy_instance_2.__class__.__name__ = "MockStrategy" # Set __name__ for printing in engine
     
-    with patch('src.strategies.base_strategy.BaseStrategy') as MockBaseStrategy_2:
+    with patch('strategies.base_strategy.BaseStrategy') as MockBaseStrategy_2:
         MockBaseStrategy_2.return_value = mock_strategy_instance_2
         MockBaseStrategy_2.__name__ = "MockStrategy" # Set __name__ for printing in engine
         engine.run(MockBaseStrategy_2, ['SYM1', 'SYM2'], {})
@@ -152,14 +147,15 @@ def test_engine_passes_multi_resolution_data_to_strategy(mock_db_file):
 
     # Check content for 60-min data
     assert 'SYM1' in market_data_2['60']
-    assert market_data_2['60']['SYM1']['close'] == 100.5 # From 2024-01-01 09:15:00
+    assert market_data_2['60']['SYM1'][0]['close'] == 100.5 # From 2024-01-01 09:15:00
 
     # Check content for 1-min data
     assert 'SYM1' in market_data_2['1']
-    assert market_data_2['1']['SYM1']['close'] == 100.1 # From 2024-01-01 09:15:00
+    assert market_data_2['1']['SYM1'][0]['close'] == 100.1 # From 2024-01-01 09:15:00
 
-    # Check content for Daily data (should be empty for this intraday timestamp)
-    assert not market_data_2['D']
+    # Check content for Daily data (should be the last known daily bar)
+    assert 'SYM1' in market_data_2['D']
+    assert market_data_2['D']['SYM1']['close'] == 104
 
 
 def test_engine_handles_missing_data_for_resolution(mock_db_file):
@@ -172,7 +168,7 @@ def test_engine_handles_missing_data_for_resolution(mock_db_file):
     mock_strategy_instance = MockStrategy(symbols=['SYM1'], portfolio=MagicMock(), order_manager=MagicMock())
     mock_strategy_instance.__class__.__name__ = "MockStrategy" # Set __name__ for printing in engine
     
-    with patch('src.strategies.base_strategy.BaseStrategy') as MockBaseStrategy:
+    with patch('strategies.base_strategy.BaseStrategy') as MockBaseStrategy:
         MockBaseStrategy.return_value = mock_strategy_instance
         MockBaseStrategy.__name__ = "MockStrategy" # Set __name__ for printing in engine
         engine.run(MockBaseStrategy, ['SYM1'], {})

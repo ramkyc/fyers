@@ -11,7 +11,7 @@ import config
 from src.strategies import STRATEGY_MAPPING
 
 from src.reporting.performance_analyzer import PerformanceAnalyzer
-from src.paper_trading.portfolio import Portfolio
+from src.paper_trading.pt_portfolio import PT_Portfolio
 # This function must be defined at the top level to be pickleable by multiprocessing
 def run_backtest_for_worker(args):
     """
@@ -21,13 +21,13 @@ def run_backtest_for_worker(args):
     start_date_str, end_date_str, db_file, resolutions, symbols, params, initial_cash, strategy_name, backtest_type = args
 
     # These imports are necessary inside the worker process
-    from src.backtesting.engine import BacktestingEngine
+    from src.backtesting.bt_engine import BT_Engine
     from src.reporting.performance_analyzer import PerformanceAnalyzer
     strategy_class = STRATEGY_MAPPING[strategy_name]
     start_datetime = datetime.datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
     end_datetime = datetime.datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
 
-    engine = BacktestingEngine(
+    engine = BT_Engine(
         start_datetime=start_datetime,
         end_datetime=end_datetime,
         db_file=db_file,
@@ -93,7 +93,7 @@ def get_all_symbols():
         st.error(f"Error reading symbols from historical database: {e}")
         return []
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=10) # Cache for 10 seconds for better responsiveness
 def get_all_run_ids():
     """Fetches all unique run_ids from the trading log database."""
     if not os.path.exists(config.TRADING_DB_FILE):
@@ -128,6 +128,51 @@ def get_live_tradeable_symbols():
         st.error(f"Error reading live symbols file: {e}")
         return []
 
+@st.cache_data(ttl=5) # Cache for 5 seconds
+def load_live_positions(run_id: str):
+    """Loads the current open positions for a specific live run ID."""
+    if not run_id:
+        return pd.DataFrame()
+    query = "SELECT symbol, timeframe, quantity, avg_price, ltp, mtm FROM live_positions WHERE run_id = ? ORDER BY symbol, timeframe;"
+    df = load_log_data(query, params=(run_id,))
+    return df
+
+@st.cache_data(ttl=5) # Cache for 5 seconds
+def load_live_bar_history(symbol: str):
+    """Loads the most recent bar history for a symbol from the live strategy data table."""
+    if not symbol:
+        return pd.DataFrame()
+    # The live_strategy_data table is in the LIVE_MARKET_DB_FILE
+    if not os.path.exists(config.LIVE_MARKET_DB_FILE):
+        return pd.DataFrame()
+    
+    query = "SELECT timestamp, open, high, low, close, volume FROM live_strategy_data WHERE symbol = ? ORDER BY timestamp ASC;"
+    
+    try:
+        with sqlite3.connect(f'file:{config.LIVE_MARKET_DB_FILE}?mode=ro', uri=True) as con:
+            df = pd.read_sql_query(query, con, params=(symbol,))
+            return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=1) # Cache for only 1 second for near real-time data
+def load_live_incomplete_bar(symbol: str):
+    """Loads the current incomplete bar for a symbol."""
+    if not symbol:
+        return None
+    if not os.path.exists(config.LIVE_MARKET_DB_FILE):
+        return None
+    
+    query = "SELECT * FROM live_incomplete_bars WHERE symbol = ?;"
+    try:
+        with sqlite3.connect(f'file:{config.LIVE_MARKET_DB_FILE}?mode=ro', uri=True) as con:
+            df = pd.read_sql_query(query, con, params=(symbol,))
+            if not df.empty:
+                return df.iloc[0].to_dict()
+    except Exception:
+        return None
+    return None
+
 def analyze_live_run(run_id: str):
     """
     Loads the data for a completed live run and calculates performance metrics.
@@ -146,11 +191,13 @@ def analyze_live_run(run_id: str):
     if portfolio_log_df.empty:
         return None # No equity curve, can't calculate drawdown/sharpe
 
+    # Correctly determine the initial cash from the first record of the portfolio log.
+    actual_initial_cash = portfolio_log_df['value'].iloc[0]
+
     # 3. Create a mock portfolio object to hold the data for the analyzer
-    mock_portfolio = Portfolio(initial_cash=200000.0, enable_logging=False)
+    mock_portfolio = PT_Portfolio(initial_cash=actual_initial_cash, enable_logging=False)
     mock_portfolio.trades = trade_log_df.to_dict('records')
     mock_portfolio.equity_curve = portfolio_log_df.to_dict('records')
-    mock_portfolio.initial_cash = portfolio_log_df['value'].iloc[0]
 
     # 4. Determine last prices for unrealized P&L calculation
     last_prices = trade_log_df.groupby('symbol')['price'].last().to_dict()

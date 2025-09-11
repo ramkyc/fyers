@@ -10,7 +10,7 @@ import datetime
 from streamlit_option_menu import option_menu
 
 # Import the new page modules
-from web_ui import backtesting_ui, papertrader_ui
+from web_ui import backtesting_ui, papertrader_ui, charts_ui
 
 def main():
     """Main function to run the Streamlit dashboard."""
@@ -20,9 +20,8 @@ def main():
     with st.sidebar:
         app_mode = option_menu(
             menu_title="Main Menu",
-            options=["Backtesting", "Live Paper Trading Monitor"],
-            icons=['graph-up-arrow', 'broadcast-pin'],
-            menu_icon="cast",
+            options=["Backtesting", "Live Paper Trading Monitor", "Live Charts"],
+            icons=['graph-up-arrow', 'broadcast-pin', 'bar-chart-line'],
             default_index=0,
         )
 
@@ -30,6 +29,8 @@ def main():
         backtesting_ui.render_page()
     elif app_mode == "Live Paper Trading Monitor":
         papertrader_ui.render_page()
+    elif app_mode == "Live Charts":
+        charts_ui.render_page()
 
 if __name__ == "__main__":
     main()
