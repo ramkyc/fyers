@@ -41,12 +41,13 @@ def get_top_nifty_stocks(top_n=10):
         for stock in sorted_stocks[:top_n]:
             raw_symbol = stock['symbol']
             # The Fyers history API expects the raw symbol (e.g., 'M&M'), not a URL-encoded one ('M%26M').
-            # Some symbols from the source (like 'ITC') already contain a hyphen in their Fyers representation ('ITC-EQ').
-            # To avoid creating an invalid symbol like 'NSE:ITC-EQ-EQ', we check before appending '-EQ'.
-            if '-' in raw_symbol:
-                top_stocks.append(f"NSE:{raw_symbol}")
-            else:
+            # The rule is: if it's not an index and doesn't already end in -EQ, add -EQ.
+            # Symbols like BAJAJ-AUTO need to become BAJAJ-AUTO-EQ.
+            # Symbols like M&M need to become M&M-EQ.
+            if not raw_symbol.endswith('-EQ') and 'INDEX' not in raw_symbol:
                 top_stocks.append(f"NSE:{raw_symbol}-EQ")
+            else:
+                top_stocks.append(f"NSE:{raw_symbol}")
 
         return top_stocks
 
@@ -80,32 +81,7 @@ def _get_date_chunks(start_date, end_date, max_days):
         yield current_start, current_end
         current_start = current_end + datetime.timedelta(days=1)
 
-def _fetch_and_store_chunk(fyers, symbol, resolution, start_date, end_date, cursor):
-    """Fetches and stores a single chunk of data."""
-    start_date_str = start_date.strftime("%Y-%m-%d")
-    end_date_str = end_date.strftime("%Y-%m-%d")
-    print(f"Fetching chunk for {symbol} ({resolution}) from {start_date_str} to {end_date_str}...")
-    try:
-        data = {
-            "symbol": symbol, "resolution": resolution, "date_format": "1",
-            "range_from": start_date_str, "range_to": end_date_str, "cont_flag": "1"
-        }
-        response = fyers.history(data=data)
-
-        if response.get("code") == 200 and response.get("candles"):
-            candles = response["candles"]
-            print(f"  - Fetched {len(candles)} candles.")
-            data_to_insert = [(datetime.datetime.fromtimestamp(c[0]), symbol, c[1], c[2], c[3], c[4], c[5], resolution) for c in candles]
-            cursor.executemany(f"INSERT OR IGNORE INTO {HISTORICAL_TABLE} (timestamp, symbol, open, high, low, close, volume, resolution) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", data_to_insert)
-            return cursor.rowcount
-        else:
-            print(f"  - Could not fetch data for chunk. Response: {response.get('message', 'No message')}")
-            return 0
-    except Exception as e:
-        print(f"  - An error occurred during chunk fetch/store: {e}")
-        return 0
-
-def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list, resolutions: list):
+def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list, resolutions: list, mode: str = 'backfill'):
     """
     Fetches historical data for a list of symbols across multiple resolutions
     and stores it in a SQLite database.
@@ -114,11 +90,11 @@ def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list,
         fyers (fyersModel.FyersModel): An authenticated fyersModel instance.
         symbols (list): A list of stock symbols (e.g., ["NSE:SBIN-EQ"])
         resolutions (list): A list of data resolutions (e.g., ["D", "60", "15", "5", "1"])
+        mode (str): 'backfill' for comprehensive history, 'live_startup' for fetching only recent data.
     """
     # The db_setup.py script is now responsible for all table creation.
     # We will connect and disconnect for each symbol to minimize db lock time.
 
-    # Fetch data up to yesterday to ensure we only get complete daily candles.
     # Fetch data up to today. The API handles partial candles correctly.
 
     for symbol in symbols:
@@ -134,41 +110,71 @@ def fetch_and_store_historical_data(fyers: fyersModel.FyersModel, symbols: list,
             continue
 
         for resolution in resolutions:
-            # Check for the latest existing data point for this symbol and resolution
-            cursor.execute(f"""
-                SELECT MAX(timestamp) FROM {HISTORICAL_TABLE}
-                WHERE symbol = ? AND resolution = ?
-            """, (symbol, resolution))
-            # The query now correctly filters by both symbol AND resolution.
-            latest_timestamp_str = cursor.fetchone()[0]
-            
-            # If data exists, start fetching from the day after the last known date to avoid re-fetching the last day.
-            # If no data exists, we'll use the default start date defined below.
-            start_date_offset = datetime.timedelta(days=1) if latest_timestamp_str else datetime.timedelta(days=0)
-            
-            if latest_timestamp_str:
-                # If data exists, start fetching from the last known date
-                overall_start_date = datetime.datetime.strptime(latest_timestamp_str, '%Y-%m-%d %H:%M:%S').date() + start_date_offset
-                print(f"Existing data found for {symbol} ({resolution}). Last entry: {overall_start_date}. Fetching new data since then.")
-            else:
-                # If no data exists, fetch the full default range from config
-                if resolution == "D":
-                    overall_start_date = datetime.datetime.strptime(config.DEFAULT_START_DATE_DAILY, "%Y-%m-%d").date()
-                else:
-                    overall_start_date = datetime.datetime.strptime(config.DEFAULT_START_DATE_INTRADAY, "%Y-%m-%d").date()
-                print(f"No existing data for {symbol} ({resolution}). Fetching full range.")
-
-            # --- Chunking Logic ---            
             overall_end_date = datetime.date.today()
-            max_days_per_call = _get_max_days_for_resolution(resolution)
 
-            for start_chunk, end_chunk in _get_date_chunks(overall_start_date, overall_end_date, max_days_per_call):
-                rows_stored = _fetch_and_store_chunk(fyers, symbol, resolution, start_chunk, end_chunk, cursor)
-                if rows_stored > 0:
-                    print(f"  - Stored {rows_stored} new candles.")
-                    con.commit() # Commit after each successful chunk
+            if mode == 'live_startup':
+                # For live startup, we only need the last ~100 candles. We fetch a bit more to be safe.
+                # We calculate a rough start date and fetch in one chunk.
+                days_to_fetch = 3 if resolution != 'D' else 150 # 3 days for intraday, 150 for daily
+                start_date_for_fetch = overall_end_date - datetime.timedelta(days=days_to_fetch)
+                print(f"  - Fetching recent data for {symbol} ({resolution})...")
+                try:
+                    data = {"symbol": symbol, "resolution": resolution, "date_format": "1", "range_from": start_date_for_fetch.strftime('%Y-%m-%d'), "range_to": overall_end_date.strftime('%Y-%m-%d'), "cont_flag": "1"}
+                    response = fyers.history(data=data)
+
+                    if response.get("code") == 200 and response.get("candles"):
+                        candles = response["candles"][-100:] # Take only the last 100 candles
+                        data_to_insert = [(datetime.datetime.fromtimestamp(c[0]), symbol, c[1], c[2], c[3], c[4], c[5], resolution) for c in candles]
+                        # For live startup, we replace existing data to ensure it's fresh.
+                        cursor.execute(f"DELETE FROM {HISTORICAL_TABLE} WHERE symbol = ? AND resolution = ?", (symbol, resolution))
+                        cursor.executemany(f"INSERT INTO {HISTORICAL_TABLE} (timestamp, symbol, open, high, low, close, volume, resolution) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", data_to_insert)
+                        con.commit()
+                except Exception as e:
+                    print(f"    - An error occurred during recent data fetch: {e}")
+
+            elif mode == 'backfill':
+                # For backfill, use the existing intelligent, incremental logic.
+                cursor.execute(f"SELECT MAX(timestamp) FROM {HISTORICAL_TABLE} WHERE symbol = ? AND resolution = ?", (symbol, resolution))
+                latest_timestamp_str = cursor.fetchone()[0]
+                
+                if latest_timestamp_str:
+                    last_known_datetime = datetime.datetime.strptime(latest_timestamp_str, '%Y-%m-%d %H:%M:%S')
+                    overall_start_date = (last_known_datetime + datetime.timedelta(seconds=1)).date()
+                    print(f"Existing data found for {symbol} ({resolution}). Last entry: {latest_timestamp_str}. Fetching new data since then.")
                 else:
-                    print(f"  - No new data for chunk or an error occurred.")
+                    if resolution == "D":
+                        overall_start_date = datetime.datetime.strptime(config.DEFAULT_START_DATE_DAILY, "%Y-%m-%d").date()
+                    else:
+                        overall_start_date = datetime.datetime.strptime(config.DEFAULT_START_DATE_INTRADAY, "%Y-%m-%d").date()
+                    print(f"No existing data for {symbol} ({resolution}). Fetching full range from {overall_start_date}.")
+                
+                current_date = overall_start_date
+                while current_date <= overall_end_date:
+                    if not is_market_working_day(current_date):
+                        current_date += datetime.timedelta(days=1)
+                        continue
+
+                    date_str = current_date.strftime('%Y-%m-%d')
+                    
+                    cursor.execute(f"SELECT 1 FROM {HISTORICAL_TABLE} WHERE symbol = ? AND resolution = ? AND date(timestamp) = ? LIMIT 1", (symbol, resolution, date_str))
+                    if cursor.fetchone() and current_date != overall_end_date:
+                        current_date += datetime.timedelta(days=1)
+                        continue
+
+                    print(f"  - Fetching data for {symbol} ({resolution}) on {date_str}...")
+                    try:
+                        data = {"symbol": symbol, "resolution": resolution, "date_format": "1", "range_from": date_str, "range_to": date_str, "cont_flag": "1"}
+                        response = fyers.history(data=data)
+
+                        if response.get("code") == 200 and response.get("candles"):
+                            candles = response["candles"]
+                            data_to_insert = [(datetime.datetime.fromtimestamp(c[0]), symbol, c[1], c[2], c[3], c[4], c[5], resolution) for c in candles]
+                            cursor.executemany(f"INSERT OR IGNORE INTO {HISTORICAL_TABLE} (timestamp, symbol, open, high, low, close, volume, resolution) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", data_to_insert)
+                            con.commit()
+                    except Exception as e:
+                        print(f"    - An error occurred during daily fetch: {e}")
+                    
+                    current_date += datetime.timedelta(days=1)
 
         # Close the connection after processing all resolutions for the current symbol
         if 'con' in locals() and con:
@@ -259,80 +265,26 @@ def fetch_historical_options_data(fyers: fyersModel.FyersModel, start_date: date
                 
                 # 4. Fetch and store data for these two option symbols for the current day
                 for option_symbol in [ce_symbol, pe_symbol]:
-                    with sqlite3.connect(config.HISTORICAL_MARKET_DB_FILE) as con:
+                    # --- Intelligent Fetch: Check if data already exists ---
+                    with sqlite3.connect(config.HISTORICAL_MARKET_DB_FILE, timeout=10) as con:
                         cursor = con.cursor()
-                        _fetch_and_store_chunk(fyers, option_symbol, "1", current_date, current_date, cursor)
-                        con.commit()
+                        # Check for any record for this symbol on this day.
+                        # We use LIKE to match any timestamp within the given day.
+                        cursor.execute("""
+                            SELECT 1 FROM historical_data 
+                            WHERE symbol = ? AND resolution = '1' AND date(timestamp) = ? 
+                            LIMIT 1
+                        """, (option_symbol, current_date.strftime('%Y-%m-%d')))
                         
+                        if cursor.fetchone():
+                            print(f"  - Data for {option_symbol} on {current_date} already exists. Skipping.")
+                        else:
+                            _fetch_and_store_chunk(fyers, option_symbol, "1", current_date, current_date, cursor)
+                            con.commit()
             except Exception as e:
                 print(f"  - Error processing {index_name} for {current_date}: {e}")
 
         current_date += datetime.timedelta(days=1)
-
-
-def get_atm_option_symbols(fyers: fyersModel.FyersModel):
-    """
-    Calculates ATM option symbols for NIFTY, BANKNIFTY, SENSEX, and BANKEX.
-
-    Args:
-        fyers (fyersModel.FyersModel): An authenticated fyersModel instance.
-
-    Returns:
-        list: A list of ATM option symbols formatted for Fyers API.
-    """
-    indices = {
-        "NIFTY": {"symbol": "NSE:NIFTY50-INDEX", "strike_interval": 100, "name": "NIFTY", "exchange": "NSE", "month_format": "%b"},
-        "BANKNIFTY": {"symbol": "NSE:NIFTYBANK-INDEX", "strike_interval": 100, "name": "BANKNIFTY", "exchange": "NSE", "month_format": "%b"},
-        # Per Fyers documentation, BSE options also use the short month name format.
-        "SENSEX": {"symbol": "BSE:SENSEX-INDEX", "strike_interval": 100, "name": "SENSEX", "exchange": "BSE", "month_format": "%b"},
-        "BANKEX": {"symbol": "BSE:BANKEX-INDEX", "strike_interval": 100, "name": "BANKEX", "exchange": "BSE", "month_format": "%b"},
-    }
-
-    option_symbols = []
-
-    for index_name, index_data in indices.items():
-        try:
-            # Get the LTP for the index
-            ltp_data = fyers.quotes({"symbols": index_data["symbol"]})
-            if ltp_data["code"] == 200 and ltp_data["d"]:
-                ltp = ltp_data["d"][0]["v"]["lp"]
-                print(f"LTP for {index_name}: {ltp}")
-
-                # Calculate the ATM strike
-                strike_interval = index_data["strike_interval"]
-                atm_strike = round(ltp / strike_interval) * strike_interval
-                print(f"ATM Strike for {index_name}: {atm_strike}")
-
-                # Get expiry dates
-                option_chain_data = fyers.optionchain({"symbol": index_data["symbol"], "strikecount": 1})
-                if option_chain_data["code"] == 200 and option_chain_data["data"]["expiryData"]:
-                    expiry_dates = [e['expiry'] for e in option_chain_data["data"]["expiryData"]]
-                    nearest_expiry_timestamp = int(expiry_dates[0])
-                    expiry_date = datetime.datetime.fromtimestamp(nearest_expiry_timestamp)
-
-                    # Construct the option symbols based on the exchange
-                    year = str(expiry_date.year)[-2:]
-                    month_format = index_data["month_format"]
-                    day = expiry_date.strftime("%d") # e.g., '05', '11'
-                    
-                    month = expiry_date.strftime(month_format).upper()
-                    ce_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}CE"
-                    pe_symbol = f"{index_data['exchange']}:{index_data['name']}{year}{month}{atm_strike}PE"
-
-                    option_symbols.extend([ce_symbol, pe_symbol])
-                    print(f"Constructed symbols: {ce_symbol}, {pe_symbol}")
-
-                else:
-                    print(f"Could not fetch expiry dates for {index_name}: {option_chain_data}")
-
-            else:
-                print(f"Could not fetch LTP for {index_name}: {ltp_data}")
-
-        except Exception as e:
-            print(f"Error processing index {index_name}: {e}")
-
-    return option_symbols
-
 
 if __name__ == "__main__":
     try:
@@ -345,6 +297,10 @@ if __name__ == "__main__":
         # 2. Get the list of symbols to fetch
         # Fetch the full Nifty 50 for more comprehensive backtesting options
         symbols_to_fetch = get_top_nifty_stocks(top_n=50)
+        # CRITICAL FIX: Also fetch data for the underlying indices, which are needed by strategies.
+        index_symbols = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "BSE:SENSEX-INDEX", "BSE:BANKEX-INDEX"]
+        symbols_to_fetch.extend(index_symbols)
+        symbols_to_fetch = sorted(list(set(symbols_to_fetch))) # Remove duplicates and sort
         print(f"\nFetching data for the following symbols: {symbols_to_fetch}")
 
         # 3. Define the resolutions to fetch
@@ -354,16 +310,9 @@ if __name__ == "__main__":
         fetch_and_store_historical_data(
             fyers=fyers,
             symbols=symbols_to_fetch,
-            resolutions=resolutions_to_fetch
+            resolutions=resolutions_to_fetch,
+            mode='backfill' # Explicitly set to backfill mode when run manually
         )
-
-        # 5. Fetch historical data for ATM options for the last 100 days
-        # This will populate the database for the live engine's warm-up process.
-        print("\n-------------------- Starting Historical Options Data Fetch --------------------")
-        end_date_options = datetime.date.today()
-        start_date_options = end_date_options - datetime.timedelta(days=100)
-        fetch_historical_options_data(fyers, start_date_options, end_date_options)
-        print("-------------------- Historical Options Data Fetch Complete --------------------")
 
         print("-------------------- Historical Data Fetch Complete --------------------")
 

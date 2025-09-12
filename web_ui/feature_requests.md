@@ -27,6 +27,20 @@ This document serves as a central backlog for all new features, enhancements, an
 *   
 ---
 
+## In-Progress Features
+
+### 1. Paper Trading System V2
+*   **Goal:** To evolve the paper trading module into a sophisticated, multi-asset, multi-timeframe research tool.
+*   **Status (as of 2025-09-10 EOD):**
+    *   **Completed:** All major architectural changes for V2 have been implemented, including multi-timeframe strategy execution, dynamic configuration file generation, and a redesigned UI. The unit test suite is passing.
+    *   **Current Blocker:** The live trading engine is still not executing trades as expected. The log files indicate that the engine starts but with `Symbols=0`.
+    *   **Root Cause Analysis:** The issue is a suspected race condition in `src/tick_collector.py`. The main process appears to be loading the configuration *before* the `prepare_live_data.py` subprocess has finished creating the necessary `pt_config_*.yaml` files.
+    *   **Next Step:** When the market opens tomorrow, the immediate priority is to debug the startup sequence in `tick_collector.py` to ensure the data preparation script runs and completes **synchronously** before the engine attempts to load its configuration.
+*   **Associated Brief:** `docs/project-brief-papertrading-v2.md`
+
+---
+
+
 ## Completed Features
 
 ### 1. Stabilize Live Trading and Backtesting

@@ -1,0 +1,15 @@
+paper_trade_type: Intraday
+params:
+  trade_value: 100000
+strategy: Opening Price Crossover
+symbols:
+- NSE:HDFCBANK-EQ
+- NSE:ICICIBANK-EQ
+- NSE:RELIANCE-EQ
+- NSE:INFY-EQ
+- NSE:BHARTIARTL-EQ
+- NSE:LT-EQ
+- NSE:ITC-EQ
+- NSE:TCS-EQ
+- NSE:M&M-EQ
+- NSE:AXISBANK-EQ

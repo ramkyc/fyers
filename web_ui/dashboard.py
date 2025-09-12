@@ -22,7 +22,6 @@ def main():
             menu_title="Main Menu",
             options=["Backtesting", "Live Paper Trading Monitor"],
             icons=['graph-up-arrow', 'broadcast-pin'],
-            menu_icon="cast",
             default_index=0,
         )
 

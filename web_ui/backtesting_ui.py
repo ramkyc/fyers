@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import concurrent.futures
 
 from src.reporting.performance_analyzer import PerformanceAnalyzer
-from src.backtesting.engine import BacktestingEngine
+from src.backtesting.bt_engine import BT_Engine
 from src.strategies import STRATEGY_MAPPING
 from web_ui.utils import get_all_symbols, get_market_time_options, load_log_data, get_all_run_ids, run_backtest_for_worker, run_and_capture_backtest
 import config
@@ -39,15 +39,14 @@ def display_optimization_results(results_df):
                     colorbar=dict(title=vis_metric, titleside='right')
                 ))
                 fig_heatmap.update_layout(title=f'Strategy Performance Landscape ({vis_metric})', xaxis_title=param_cols[1], yaxis_title=param_cols[0])
-                # NOTE: As of Streamlit v1.49, this widget shows a deprecation warning for 'use_container_width'.
-                # However, the recommended 'width' parameter is not yet supported for this widget.
-                # We will keep using 'use_container_width' until it is fully deprecated.
-                st.plotly_chart(fig_heatmap, use_container_width=True)
+                # Replaced deprecated 'use_container_width=True' with 'width="stretch"'.
+                st.plotly_chart(fig_heatmap, width='stretch')
             with tab3:
                 st.subheader(f"{vis_metric} 3D Surface Plot")
                 fig_3d = go.Figure(data=[go.Surface(z=pivot_df.values, x=pivot_df.columns, y=pivot_df.index)])
                 fig_3d.update_layout(title=f'Strategy Performance Landscape ({vis_metric})', scene=dict(xaxis_title=param_cols[1], yaxis_title=param_cols[0], zaxis_title=vis_metric))
-                st.plotly_chart(fig_3d, use_container_width=True)
+                # Replaced deprecated 'use_container_width=True' with 'width="stretch"'.
+                st.plotly_chart(fig_3d, width='stretch')
     except Exception as e:
         st.error(f"Could not generate visualizations. This can happen if there are not enough data points for a grid. Error: {e}")
 
@@ -83,12 +82,11 @@ def render_page():
     st.sidebar.header("Backtest Configuration")
     with st.sidebar.form(key='backtest_form'):
         all_symbols = get_all_symbols()
-        default_symbols = ["NSE:SBIN-EQ", "NSE:RELIANCE-EQ", "NSE:HDFCBANK-EQ"]
-        pre_selected_symbols = [s for s in default_symbols if s in all_symbols]
-        symbols_to_test = st.multiselect("Select Symbols", options=all_symbols, default=pre_selected_symbols)
+        # Default to an empty list for symbols, letting the user choose.
+        symbols_to_test = st.multiselect("Select Symbols", options=all_symbols, default=[])
         backtest_type = st.radio("Backtest Type", ('Positional', 'Intraday'), index=0, help="**Positional**: Holds trades across multiple days. **Intraday**: All open positions are force-closed at the end of each day.")
         resolutions = ["D", "60", "30", "15", "5", "1"]
-        resolution = st.selectbox("Select Resolution", options=resolutions, index=2)
+        resolution = st.selectbox("Select Timeframe", options=resolutions, index=resolutions.index("15"))
         time_options = get_market_time_options()
         
         st.markdown("---")
@@ -192,7 +190,7 @@ def render_page():
                     if selected_strategy_name == "Opening Price Crossover": other_resolutions.add("1")
                     final_resolutions = [resolution] + list(other_resolutions)
 
-                    engine = BacktestingEngine(start_datetime=start_datetime, end_datetime=end_datetime, db_file=config.HISTORICAL_MARKET_DB_FILE, resolutions=final_resolutions)
+                    engine = BT_Engine(start_datetime=start_datetime, end_datetime=end_datetime, db_file=config.HISTORICAL_MARKET_DB_FILE, resolutions=final_resolutions)
                     portfolio_result, last_prices, backtest_log = run_and_capture_backtest(engine, strategy_class, symbols_to_test, strategy_params, initial_cash, backtest_type)
 
                     if portfolio_result:
@@ -200,20 +198,3 @@ def render_page():
                     else:
                         st.error("Backtest did not return any results.")
                         st.subheader("Backtest Log")
-                        st.code(backtest_log)
-
-    # --- Backtest Run Logs ---
-    st.header("Backtest Activity Logs")
-    st.markdown("View logs from specific backtest runs.")
-    backtest_runs = [r for r in get_all_run_ids() if not r.startswith('live_')]
-    if not backtest_runs:
-        st.info("No backtest activity has been logged yet. Run a backtest to see logs here.")
-    else:
-        selected_run_id = st.selectbox("Select a Backtest Run ID to inspect:", options=backtest_runs, key="backtest_run_selector")
-        st.subheader(f"Trade Log for Run: `{selected_run_id}`")
-        trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp DESC;"
-        trade_log_df = load_log_data(trade_log_query, params=(selected_run_id,))
-        if not trade_log_df.empty:
-            st.dataframe(trade_log_df)
-        else:
-            st.info("No trades were executed in this backtest run.")

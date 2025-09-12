@@ -6,6 +6,7 @@ import pandas as pd
 import os
 import sys
 import json
+import yaml
 
 # Add project root to path to allow importing config
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -13,55 +14,62 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import config
-from src.fetch_historical_data import get_top_nifty_stocks, get_atm_option_symbols
-from src.auth import get_fyers_model, get_access_token
-from src.fetch_symbol_master import fetch_and_store_symbol_masters
-from src.strategies import STRATEGY_MAPPING
+from fetch_historical_data import get_top_nifty_stocks
+from auth import get_fyers_model, get_access_token
+from fetch_symbol_master import fetch_and_store_symbol_masters
+from strategies import STRATEGY_MAPPING
 
 def prepare_live_strategy_data():
     """
     Pre-populates the `live_strategy_data` table with the most recent
     bar history needed by strategies. This script should be run before
     the market opens.
+    This script is now the single source of truth for all pre-market preparation.
     """
     print(f"[{datetime.datetime.now()}] Starting daily preparation of live strategy data...")
-
-    today_str = datetime.date.today().strftime('%Y-%m-%d')
-    marker_file = os.path.join(config.DATA_DIR, f"live_data_prepared_for_{today_str}.txt")
-
-    if os.path.exists(marker_file):
-        print(f"Live strategy data has already been prepared for {today_str}. Skipping.")
-        return
-
     try:
-        # --- Daily Symbol Master Sync ---
-        # As per the user's request, we sync the master data once per day
-        # at the start of the pre-market preparation process.
-        fetch_and_store_symbol_masters()
+        # --- Dynamic Configuration File Generation ---
+        fyers_model = get_fyers_model(get_access_token())
+        
+        # 1. Generate pt_config_stocks.yaml
+        top_10_stocks = get_top_nifty_stocks(top_n=10)
+        stocks_config_path = os.path.join(project_root, 'pt_config_stocks.yaml')
+        default_stock_config = {
+            'strategy': config.DEFAULT_LIVE_STRATEGY,
+            'symbols': top_10_stocks,
+            'paper_trade_type': 'Intraday',
+            'params': {'trade_value': 100000} # A safe default
+        }
+        with open(stocks_config_path, 'w') as f:
+            yaml.dump(default_stock_config, f)
+        print(f"Generated default stock config at {stocks_config_path}")
 
-        # 1. Load the live configuration to see which strategy is selected
-        from src.live_config_manager import load_config
-        live_config, msg = load_config()
-        if not live_config:
-            print(f"Could not prepare live data: {msg}")
+
+        # --- Decoupled Logic: Read symbols and strategy directly from the generated files ---
+        # This avoids the race condition of calling load_config() before files are ready.
+        # --- SIMPLIFIED: Only use symbols from the stocks config ---
+        symbols_to_prepare = sorted(list(set(default_stock_config.get('symbols', []))))
+
+        if not symbols_to_prepare:
+            print("No stock symbols found in config. Aborting data preparation.")
             return
 
+        # Also ensure we prepare data for the underlying indices for the strategy's logic
+        symbols_to_prepare.extend(["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "BSE:SENSEX-INDEX", "BSE:BANKEX-INDEX"])
+        strategy_name = default_stock_config.get('strategy', config.DEFAULT_LIVE_STRATEGY)
+
         # 2. Instantiate the strategy to ask it what data it needs
-        strategy_class = STRATEGY_MAPPING.get(live_config['strategy'])
+        strategy_class = STRATEGY_MAPPING.get(strategy_name)
         if not strategy_class:
-            print(f"Strategy '{live_config['strategy']}' not found. Cannot prepare data.")
+            print(f"Strategy '{strategy_name}' not found. Cannot prepare data.")
             return
         
         # We instantiate it with dummy portfolio/oms because we only need its parameters
-        strategy_instance = strategy_class(symbols=[], portfolio=None, order_manager=None, params=live_config['params'])
-        required_resolutions = strategy_instance.get_required_resolutions()
-        print(f"Strategy '{live_config['strategy']}' requires resolutions: {required_resolutions}")
-
-        # 3. Determine the symbols that will be traded today
-        fyers_model = get_fyers_model(get_access_token())
-        tradeable_symbols = get_top_nifty_stocks(top_n=50)
-        atm_options = get_atm_option_symbols(fyers_model)
-        symbols_to_prepare = tradeable_symbols + atm_options
+        strategy_instance = strategy_class(symbols=[], params=default_stock_config.get('params', {}), resolutions=['1'])
+        # Ensure we always fetch 1-minute data for the live charts, in addition to what the strategy needs.
+        # Critical Fix: The live engine runs on all these timeframes, so we must prepare data for all of them.
+        live_timeframes = ['1', '5', '15', '30', '60', 'D'] # CRITICAL FIX: Add 'D' for daily data
+        required_resolutions = sorted(list(set(strategy_instance.get_required_resolutions() + live_timeframes)))
 
         required_history_len = 100 # A safe number to cover most lookback periods
 
@@ -69,17 +77,6 @@ def prepare_live_strategy_data():
         hist_con = sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True)
         live_con = sqlite3.connect(config.LIVE_MARKET_DB_FILE)
         live_cursor = live_con.cursor()
-
-        # Ensure the target table exists
-        live_cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_strategy_data (
-                timestamp TIMESTAMP,
-                symbol TEXT,
-                resolution TEXT,
-                open REAL, high REAL, low REAL, close REAL, volume INTEGER,
-                UNIQUE(symbol, resolution, timestamp)
-            );
-        """)
 
         # 5. Clear the old data from the live strategy table
         live_cursor.execute("DELETE FROM live_strategy_data;")
@@ -103,18 +100,8 @@ def prepare_live_strategy_data():
                     df.to_sql('live_strategy_data', live_con, if_exists='append', index=False)
                     print(f"  - Prepared {len(df)} bars for {symbol} at {resolution} resolution.")
 
-        # 7. Save the full list of prepared symbols for the dashboard to use
-        live_symbols_file = os.path.join(config.DATA_DIR, 'live_symbols.json')
-        with open(live_symbols_file, 'w') as f:
-            json.dump(symbols_to_prepare, f)
-        print(f"Saved {len(symbols_to_prepare)} tradeable symbols to {live_symbols_file}")
-
         live_con.commit()
 
-        # 8. Create the marker file to indicate successful preparation
-        with open(marker_file, 'w') as f:
-            f.write(f"Data prepared at {datetime.datetime.now()}")
-        print(f"Successfully created marker file: {marker_file}")
 
     except Exception as e:
         print(f"An error occurred during live data preparation: {e}")

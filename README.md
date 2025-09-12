@@ -26,7 +26,7 @@ TraderBuddy is a comprehensive trading platform that interfaces with the Fyers A
     ```
 
 2.  **Install dependencies using Poetry:**
-    This will create a virtual environment and install all required packages from `pyproject.toml`.
+    This command reads the `pyproject.toml` and `poetry.lock` files to create a dedicated virtual environment and install the exact versions of all required packages. This ensures your environment is perfectly consistent and reproducible.
     ```bash
     poetry install
     ```

@@ -6,21 +6,29 @@ import pandas_ta as ta
 from collections import defaultdict, deque
 from typing import Dict
 import sys
-import sys
 
-from src.strategies.base_strategy import BaseStrategy
+from strategies.base_strategy import BaseStrategy
 
 class OpeningPriceCrossoverStrategy(BaseStrategy):
     """
-    A long-only strategy that enters when the price crosses above the candle's open,
-    filtered by a 9/21 EMA crossover.
+    A long-only momentum strategy with a multi-faceted entry filter.
+
+    Core Logic:
+    - Enters a long position when a bullish EMA crossover (e.g., 9 over 21) is present.
+    - The primary filter is based on the instrument's relationship with its daily open price,
+      which serves as a proxy for intraday sentiment.
+
+    Options Trading Logic:
+    - For options, the strategy's sentiment filter is based on the **underlying index's** daily open, not the option's.
+    - **Call (CE) options** are treated like stocks: an entry is considered only if the underlying index is trading ABOVE its daily open (bullish sentiment).
+    - **Put (PE) options** have inverted logic: an entry is considered only if the underlying index is trading BELOW its daily open (bearish sentiment).
     """
 
-    def __init__(self, symbols: list[str], portfolio: 'Portfolio', order_manager: 'OrderManager', params: dict[str, object] = None, resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'PT_Portfolio' = None, order_manager: 'OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None):
         """
         Initializes the Opening Price Crossover Strategy.
         """
-        super().__init__(symbols, portfolio, order_manager, params)
+        super().__init__(symbols, portfolio, order_manager, params, resolutions)
         
         # Strategy-specific parameters
         self.ema_fast_period = self.params.get('ema_fast', 9)
@@ -36,7 +44,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.atr_period = self.params.get('atr_period', 14)
         self.atr_multiplier = self.params.get('atr_multiplier', 1.5)
 
-        self.trade_value: float = float(self.params.get('trade_value', 25000.0))
+        self.trade_value: float = float(self.params.get('trade_value', 100000.0))
         # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
         # If resolutions is None, it implies a live trading context.
         self.primary_resolution = resolutions[0] if resolutions else "1"
@@ -73,6 +81,27 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         required = {self.primary_resolution, "D", "1"}
         return sorted(list(required), key=lambda x: (x != self.primary_resolution, x))
 
+    def _log_live_decision_data(self, symbol: str, timestamp: datetime.datetime, data: dict):
+        """Helper to log the data used for making a live trade decision."""
+        def _format_float(value):
+            """Safely formats a float or returns 'nan'."""
+            if isinstance(value, (int, float)):
+                return f"{value:.2f}"
+            return "nan"
+
+        print(
+            f"[{timestamp}] DEBUG FOR {symbol}:\n"
+            f"  - LTP: {_format_float(data.get('ltp'))}\n"
+            f"  - Daily Open: {_format_float(data.get('daily_open'))}\n"
+            f"  - EMA Fast/Slow: {_format_float(data.get('ema_fast'))} / {_format_float(data.get('ema_slow'))}\n"
+            f"  - EMA Bullish?: {data.get('is_ema_bullish')}\n"
+            f"  - Price Bullish (Candle)?: {data.get('is_price_bullish')}\n"
+            f"  - Sentiment Filter Passed?: {data.get('sentiment_filter_passed')}\n"
+            f"  - Crossover Spike?: {data.get('is_crossover_spike')}\n"
+            f"  - FINAL DECISION: {'Proceeding to entry check' if data.get('all_conditions_met') else 'Conditions not met'}\n"
+            f"  --------------------------------------------------"
+        )
+
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         """
         Called for each new data bar.
@@ -87,6 +116,10 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             if symbol not in market_data:
                 continue
 
+            # --- SIMPLIFIED: Always analyze the primary symbol ---
+            analysis_symbol = symbol
+            analysis_market_data = market_data_all_resolutions
+
             bar_history_list = market_data[symbol]
             df = pd.DataFrame(bar_history_list)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -98,32 +131,43 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 self.daily_open_prices[symbol] = df['open'].iloc[-1]
                 self.last_processed_day[symbol] = current_day
             
-            daily_open_price = self.daily_open_prices.get(symbol)
-            
-            # For backtesting, we can get it directly if provided
-            if not is_live and "D" in market_data_all_resolutions:
-                daily_data = market_data_all_resolutions.get("D", {}).get(symbol, {})
-                daily_open_price = daily_data.get('open', daily_open_price) # Fallback to tracked price
+            # --- V3: Intelligent Daily Open Price Logic ---
+            daily_open_price = 0
+            # Correctly get the daily data for the specific symbol being analyzed
+            daily_data_for_symbol = analysis_market_data.get("D", {}).get(analysis_symbol)
+            # The engine now provides daily data as a list containing one dictionary.
+            # We must access the first element of the list.
+            if daily_data_for_symbol and isinstance(daily_data_for_symbol, list) and len(daily_data_for_symbol) > 0:
+                daily_open_price = daily_data_for_symbol[0].get('open', 0)
 
+            # --- Indicator Calculations on the Analysis Symbol's Data ---
+            # CRITICAL FIX: Create the DataFrame from the specific symbol's bar history,
+            # not the entire dictionary for the resolution.
+            analysis_df = pd.DataFrame(analysis_market_data[self.primary_resolution][analysis_symbol])
+            if len(analysis_df) < self.ema_slow_period:
+                continue # Not enough data on the analysis symbol
+
+            
             # Ensure we have enough data to calculate indicators
             if len(df) < self.ema_slow_period or daily_open_price == 0:
                 continue
 
             # --- Indicator Calculations ---
-            df.ta.ema(length=self.ema_fast_period, append=True)
-            df.ta.ema(length=self.ema_slow_period, append=True)
-            df.ta.atr(length=self.atr_period, append=True) # Calculate ATR
+            analysis_df.ta.ema(length=self.ema_fast_period, append=True)
+            analysis_df.ta.ema(length=self.ema_slow_period, append=True)
+            analysis_df.ta.atr(length=self.atr_period, append=True) # Calculate ATR
             
             # Get the latest values
-            latest = df.iloc[-1]
-            previous = df.iloc[-2] if len(df) > 1 else latest
+            latest_analysis = analysis_df.iloc[-1]
+            previous_analysis = analysis_df.iloc[-2] if len(analysis_df) > 1 else latest_analysis
             
-            ema_fast = latest[f'EMA_{self.ema_fast_period}']
-            ema_slow = latest[f'EMA_{self.ema_slow_period}']
-            atr_value = latest[f'ATRr_{self.atr_period}']
+            ema_fast = latest_analysis[f'EMA_{self.ema_fast_period}']
+            ema_slow = latest_analysis[f'EMA_{self.ema_slow_period}']
+            # Use a default ATR of 0 if the column doesn't exist (e.g., not enough data)
+            atr_value = latest_analysis.get(f'ATRr_{self.atr_period}', 0)
 
             # --- Position Management ---
-            active_trade = self.portfolio.positions.get(symbol)
+            active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
             
             # 1. Check for Exits if a position is open
             if active_trade and active_trade['quantity'] > 0:
@@ -131,32 +175,32 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 if not trade_details: continue # Should not happen if position is active
 
                 # Check Target 3 first (highest target)
-                if not trade_details.get('t3_hit', False) and latest['high'] >= trade_details['target3']:
+                if not trade_details.get('t3_hit', False) and latest_analysis['high'] >= trade_details['target3']:
                     self._log_debug(f"{timestamp} | {symbol} | EXIT T3: Selling remaining {active_trade['quantity']} shares at {trade_details['target3']}")
-                    self.sell(symbol, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
+                    self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
 
                 # Check Target 2
-                if not trade_details.get('t2_hit', False) and latest['high'] >= trade_details['target2']:
+                if not trade_details.get('t2_hit', False) and latest_analysis['high'] >= trade_details['target2']:
                     qty_to_sell_t2 = int(trade_details['initial_quantity'] * self.exit_percent_target2)
                     if qty_to_sell_t2 > 0 and active_trade['quantity'] >= qty_to_sell_t2:
                         self._log_debug(f"{timestamp} | {symbol} | EXIT T2: Selling {qty_to_sell_t2} shares at {trade_details['target2']}")
-                        self.sell(symbol, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
+                        self.sell(symbol, self.primary_resolution, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
                         trade_details['t2_hit'] = True
 
                 # Check Target 1
-                if not trade_details.get('t1_hit', False) and latest['high'] >= trade_details['target1']:
+                if not trade_details.get('t1_hit', False) and latest_analysis['high'] >= trade_details['target1']:
                     qty_to_sell = int(trade_details['initial_quantity'] * self.exit_percent_target1)
                     if qty_to_sell > 0 and active_trade['quantity'] >= qty_to_sell:
                         self._log_debug(f"{timestamp} | {symbol} | EXIT T1: Selling {qty_to_sell} shares at {trade_details['target1']}")
-                        self.sell(symbol, qty_to_sell, trade_details['target1'], timestamp, is_live)
+                        self.sell(symbol, self.primary_resolution, qty_to_sell, trade_details['target1'], timestamp, is_live)
                         trade_details['t1_hit'] = True
 
                 # Check Stop Loss
-                if latest['low'] <= trade_details['stop_loss']:
+                if latest_analysis['low'] <= trade_details['stop_loss']:
                     self._log_debug(f"{timestamp} | {symbol} | EXIT SL: Selling remaining {active_trade['quantity']} shares at {trade_details['stop_loss']}")
-                    self.sell(symbol, active_trade['quantity'], trade_details['stop_loss'], timestamp, is_live)
+                    self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['stop_loss'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
             
@@ -164,7 +208,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             else:
                 # --- Entry Conditions ---
                 is_ema_bullish = ema_fast > ema_slow
-                is_price_bullish = latest['close'] > latest['open']
+                is_price_bullish = latest_analysis['close'] >= latest_analysis['open']
 
                 # Use the accurate live count if available, otherwise use the backtest's implied count.
                 crossover_count = 0
@@ -180,12 +224,42 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 
                 average_implied_crossover_count = sum(self.implied_crossover_history[symbol]) / len(self.implied_crossover_history[symbol]) if self.implied_crossover_history[symbol] else 0
 
-                if is_ema_bullish and is_price_bullish and crossover_count > average_implied_crossover_count:
-                    entry_price = latest['close']
+                # --- V4: Sentiment Filter (Correctly handles Puts) ---
+                sentiment_filter_passed = False
+                is_put_option = "PE" in symbol.upper()
+
+                if is_put_option:
+                    # For Puts, we want weakness. The underlying should be BELOW its open.
+                    sentiment_filter_passed = latest_analysis['close'] < daily_open_price
+                else:
+                    # For Calls/Stocks, we want strength. The underlying should be ABOVE its open.
+                    sentiment_filter_passed = latest_analysis['close'] > daily_open_price
+                
+                # --- V5: Crossover Count Filter ---
+                # This is the core filter based on the dual-logic described in the class docstring.
+                is_crossover_spike = crossover_count > average_implied_crossover_count
+
+                # --- Always-on Debug Logging for Live Engine ---
+                all_conditions_met = is_ema_bullish and is_price_bullish and sentiment_filter_passed and is_crossover_spike
+                self._log_live_decision_data(symbol, timestamp, {
+                    "ltp": latest_analysis['close'],
+                    "daily_open": daily_open_price,
+                    "ema_fast": ema_fast,
+                    "ema_slow": ema_slow,
+                    "is_ema_bullish": is_ema_bullish,
+                    "is_price_bullish": is_price_bullish,
+                    "sentiment_filter_passed": sentiment_filter_passed,
+                    "is_crossover_spike": is_crossover_spike, # Added for debugging
+                    "all_conditions_met": all_conditions_met
+                })
+
+                # --- Final Entry Decision ---
+                if all_conditions_met:
+                    entry_price = pd.DataFrame(bar_history_list).iloc[-1]['close'] # Use the actual option's price for entry
                     
                     # New dynamic stop-loss calculation
-                    volatility_stop = min(latest['low'], previous['low'])
-                    atr_stop = entry_price - (atr_value * self.atr_multiplier)
+                    volatility_stop = min(latest_analysis['low'], previous_analysis['low'])
+                    atr_stop = entry_price - (atr_value * self.atr_multiplier) # Stop loss is based on underlying's volatility
                     stop_loss = min(volatility_stop, atr_stop)
 
                     risk_per_share = entry_price - stop_loss
@@ -196,11 +270,12 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                     
                     # Dynamic quantity calculation based on trade value
                     if entry_price > 0:
-                        quantity = int(self.trade_value / entry_price)
+                        capital_to_deploy = self.portfolio.get_capital_for_position(symbol, self.primary_resolution, self.trade_value)
+                        quantity = int(capital_to_deploy / entry_price)
 
                         if quantity > 0:
                             self._log_debug(f"{timestamp} | {symbol} | ENTRY: Buying {quantity} shares at {entry_price:.2f}")
-                            self.buy(symbol, quantity, entry_price, timestamp, is_live)
+                            self.buy(symbol, self.primary_resolution, quantity, entry_price, timestamp, is_live)
                             self.active_trades[symbol] = {
                                 'stop_loss': stop_loss,
                                 'target1': target1,

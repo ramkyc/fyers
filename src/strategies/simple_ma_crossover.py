@@ -2,9 +2,9 @@
 
 from collections import defaultdict
 import pandas as pd
-from src.paper_trading.oms import OrderManager
-from src.paper_trading.portfolio import Portfolio
-from src.strategies.base_strategy import BaseStrategy
+from src.paper_trading.pt_oms import PT_OrderManager
+from src.paper_trading.pt_portfolio import PT_Portfolio
+from strategies.base_strategy import BaseStrategy
 import numpy as np
 from typing import Dict
 import datetime
@@ -16,21 +16,21 @@ class SMACrossoverStrategy(BaseStrategy):
     - Buys when the short-term SMA crosses above the long-term SMA.
     - Sells (to close a position) when the short-term SMA crosses below the long-term SMA.
     """
-    def __init__(self, symbols: list[str], portfolio: Portfolio, order_manager: OrderManager, params: dict[str, object], resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'PT_Portfolio' = None, order_manager: 'PT_OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None):
         """
         Initializes the SMACrossoverStrategy.
 
         Args:
             symbols (list[str]): A list of symbols to trade.
-            portfolio (Portfolio): The portfolio object to interact with.
-            order_manager (OrderManager): The OrderManager object to execute trades.
+            portfolio (PT_Portfolio): The portfolio object to interact with.
+            order_manager (PT_OrderManager): The OrderManager object to execute trades.
             params (dict[str, object]): A dictionary of parameters, expecting:
                          - 'short_window' (int)
                          - 'long_window' (int)
                          - 'trade_quantity' (int)
         """
-        super().__init__(symbols=symbols, portfolio=portfolio, order_manager=order_manager, params=params)
-        self.order_manager: OrderManager = order_manager
+        super().__init__(symbols=symbols, portfolio=portfolio, order_manager=order_manager, params=params, resolutions=resolutions)
+        self.order_manager: PT_OrderManager = order_manager
         def safe_int(val, default):
             try:
                 return int(val)
@@ -104,14 +104,7 @@ class SMACrossoverStrategy(BaseStrategy):
             f"  --------------------------------------------------"
         )
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
-        """
-        Processes new data (live ticks) and executes trades if a crossover occurs.
-        This method is required by the BaseStrategy and used by the LiveTradingEngine.
-        """
-        
         is_live_trading = kwargs.get('is_live_trading', False)
-        
-        # Extract data for the primary resolution
         data = market_data_all_resolutions.get(self.primary_resolution, {})
 
         for symbol in self.symbols:
@@ -119,45 +112,6 @@ class SMACrossoverStrategy(BaseStrategy):
                 continue
             
             bar_history_list = data[symbol]
-
-            # --- Robustness Check for Shutdown ---
-            # On shutdown, we might receive a list with only one bar. This check prevents errors.
-            if len(bar_history_list) < 2:
-                continue
-
-            # --- LOGGING BLOCK (Moved Up) ---
-            # We log here to see the state on every bar, even before we have enough data for indicators.
-            if is_live_trading:
-                df_temp = pd.DataFrame(bar_history_list)
-                
-                # Initialize all values to NaN
-                short_sma_val, prev_short_sma_val = np.nan, np.nan
-                long_sma_val, prev_long_sma_val = np.nan, np.nan
-                ltp = df_temp['close'].iloc[-1] if not df_temp.empty else np.nan
-
-                # Calculate SMAs only if enough data exists
-                if len(df_temp) >= self.short_window:
-                    short_sma_series = df_temp['close'].rolling(window=self.short_window).mean()
-                    short_sma_val = short_sma_series.iloc[-1]
-                    if len(df_temp) >= self.short_window + 1:
-                        prev_short_sma_val = short_sma_series.iloc[-2]
-
-                if len(df_temp) >= self.long_window:
-                    long_sma_series = df_temp['close'].rolling(window=self.long_window).mean()
-                    long_sma_val = long_sma_series.iloc[-1]
-                    if len(df_temp) >= self.long_window + 1:
-                        prev_long_sma_val = long_sma_series.iloc[-2]
-
-                log_data = {
-                    'ltp': ltp, 'short_sma': short_sma_val, 'long_sma': long_sma_val,
-                    'prev_short_sma': prev_short_sma_val, 'prev_long_sma': prev_long_sma_val,
-                    'position_exists': self.portfolio.get_position(symbol) is not None
-                }
-                self._log_live_decision_data(symbol, timestamp, log_data)
-            # --- END OF LOGGING BLOCK ---
-
-            # The engine now provides the full, managed bar history directly.
-            # We convert it to a DataFrame for easy calculation.
             if len(bar_history_list) < self.long_window:
                 continue # Not enough data to calculate the long-term SMA
 
@@ -185,15 +139,27 @@ class SMACrossoverStrategy(BaseStrategy):
                not np.isnan(prev_short_sma) and not np.isnan(prev_long_sma):
                 # --- Rule: Prevent Position Pyramiding ---
                 # Check if a position already exists for this symbol before entering a new one.
-                position = self.portfolio.get_position(symbol)
+                position = self.portfolio.get_position(symbol, self.primary_resolution)
+
+                # --- Live Debugging ---
+                if is_live_trading:
+                    self._log_live_decision_data(symbol, timestamp, {
+                        "ltp": ltp,
+                        "short_sma": short_sma,
+                        "long_sma": long_sma,
+                        "prev_short_sma": prev_short_sma,
+                        "prev_long_sma": prev_long_sma,
+                        "position_exists": bool(position)
+                    })
 
                 # Bullish Crossover
                 if short_sma > long_sma and prev_short_sma <= prev_long_sma and not position:
                     if ltp > 0:
-                        quantity_to_buy = int(self.trade_value / ltp)
+                        capital_to_deploy = self.portfolio.get_capital_for_position(symbol, self.primary_resolution, self.trade_value)
+                        quantity_to_buy = int(capital_to_deploy / ltp)
                         if quantity_to_buy > 0:
-                            self.buy(symbol, quantity_to_buy, ltp, timestamp, is_live_trading)
+                            self.buy(symbol, self.primary_resolution, quantity_to_buy, ltp, timestamp, is_live_trading)
 
                 # Bearish Crossover
                 elif short_sma < long_sma and prev_short_sma >= prev_long_sma and position and position['quantity'] > 0:
-                    self.sell(symbol, abs(position['quantity']), ltp, timestamp, is_live_trading)
+                    self.sell(symbol, self.primary_resolution, abs(position['quantity']), ltp, timestamp, is_live_trading)
