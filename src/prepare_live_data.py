@@ -14,20 +14,20 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import config
-from src.fetch_historical_data import get_top_nifty_stocks, get_atm_option_symbols
-from src.auth import get_fyers_model, get_access_token
-from src.fetch_symbol_master import fetch_and_store_symbol_masters
-from src.strategies import STRATEGY_MAPPING
+from fetch_historical_data import get_top_nifty_stocks
+from auth import get_fyers_model, get_access_token
+from fetch_symbol_master import fetch_and_store_symbol_masters
+from strategies import STRATEGY_MAPPING
 
 def prepare_live_strategy_data():
     """
     Pre-populates the `live_strategy_data` table with the most recent
     bar history needed by strategies. This script should be run before
     the market opens.
+    This script is now the single source of truth for all pre-market preparation.
     """
     print(f"[{datetime.datetime.now()}] Starting daily preparation of live strategy data...")
     try:
-
         # --- Dynamic Configuration File Generation ---
         fyers_model = get_fyers_model(get_access_token())
         
@@ -44,26 +44,16 @@ def prepare_live_strategy_data():
             yaml.dump(default_stock_config, f)
         print(f"Generated default stock config at {stocks_config_path}")
 
-        # 2. Generate pt_config_options.yaml
-        atm_options = get_atm_option_symbols(fyers_model)
-        options_config_path = os.path.join(project_root, 'pt_config_options.yaml')
-        default_options_config = {
-            'strategy': config.DEFAULT_LIVE_STRATEGY,
-            'symbols': atm_options,
-            'paper_trade_type': 'Intraday',
-            'params': {'trade_value': 100000}
-        }
-        with open(options_config_path, 'w') as f:
-            yaml.dump(default_options_config, f)
-        print(f"Generated default options config at {options_config_path}")
-
 
         # --- Decoupled Logic: Read symbols and strategy directly from the generated files ---
         # This avoids the race condition of calling load_config() before files are ready.
-        symbols_to_prepare = sorted(list(set(
-            default_stock_config.get('symbols', []) + 
-            default_options_config.get('symbols', [])
-        )))
+        # --- SIMPLIFIED: Only use symbols from the stocks config ---
+        symbols_to_prepare = sorted(list(set(default_stock_config.get('symbols', []))))
+
+        if not symbols_to_prepare:
+            print("No stock symbols found in config. Aborting data preparation.")
+            return
+
         # Also ensure we prepare data for the underlying indices for the strategy's logic
         symbols_to_prepare.extend(["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "BSE:SENSEX-INDEX", "BSE:BANKEX-INDEX"])
         strategy_name = default_stock_config.get('strategy', config.DEFAULT_LIVE_STRATEGY)
@@ -75,10 +65,10 @@ def prepare_live_strategy_data():
             return
         
         # We instantiate it with dummy portfolio/oms because we only need its parameters
-        strategy_instance = strategy_class(symbols=[], portfolio=None, order_manager=None, params=default_stock_config['params'])
+        strategy_instance = strategy_class(symbols=[], params=default_stock_config.get('params', {}), resolutions=['1'])
         # Ensure we always fetch 1-minute data for the live charts, in addition to what the strategy needs.
         # Critical Fix: The live engine runs on all these timeframes, so we must prepare data for all of them.
-        live_timeframes = ['1', '5', '15', '30', '60']
+        live_timeframes = ['1', '5', '15', '30', '60', 'D'] # CRITICAL FIX: Add 'D' for daily data
         required_resolutions = sorted(list(set(strategy_instance.get_required_resolutions() + live_timeframes)))
 
         required_history_len = 100 # A safe number to cover most lookback periods

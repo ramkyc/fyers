@@ -50,13 +50,7 @@ def load_config():
         with open(STOCKS_CONFIG_FILE, 'r') as f:
             stocks_config = yaml.safe_load(f) or {}
 
-    # 3. Load auto-generated options configuration
-    options_config = {}
-    if os.path.exists(OPTIONS_CONFIG_FILE):
-        with open(OPTIONS_CONFIG_FILE, 'r') as f:
-            options_config = yaml.safe_load(f) or {}
-
-    # 4. Merge them. The user's config takes precedence.
+    # 3. Merge them. The user's config takes precedence.
     try:
         # If the user has saved symbols, use them. Otherwise, use the combined default list.
         # This logic now correctly handles the case where `symbols` is explicitly set to `None` in the user config.
@@ -64,9 +58,10 @@ def load_config():
         if user_symbols is not None:
             final_symbols = user_symbols
         else:
-            final_symbols = stocks_config.get('symbols', []) + options_config.get('symbols', [])
+            # --- SIMPLIFIED: Only use symbols from the stocks config ---
+            final_symbols = stocks_config.get('symbols', [])
         
-        final_config = {**stocks_config, **options_config, **user_config, 'symbols': final_symbols}
+        final_config = {**stocks_config, **user_config, 'symbols': final_symbols}
         return final_config, "Configuration loaded successfully."
     except Exception as e:
         return None, f"Error merging configurations: {e}"

@@ -47,7 +47,7 @@ ENABLE_LIVE_TRADING = False
 print(f"--- Configuration loaded for ENVIRONMENT: {ENVIRONMENT} ---")
 
 # --- Data Fetching Configuration ---
-DEFAULT_START_DATE_DAILY = "2023-01-01"
+DEFAULT_START_DATE_DAILY = "2024-04-01"
 DEFAULT_START_DATE_INTRADAY = "2024-04-01"
 
 # --- Default Strategy for Live Paper Trading ---

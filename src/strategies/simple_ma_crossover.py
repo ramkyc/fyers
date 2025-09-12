@@ -16,7 +16,7 @@ class SMACrossoverStrategy(BaseStrategy):
     - Buys when the short-term SMA crosses above the long-term SMA.
     - Sells (to close a position) when the short-term SMA crosses below the long-term SMA.
     """
-    def __init__(self, symbols: list[str], portfolio: PT_Portfolio, order_manager: PT_OrderManager, params: dict[str, object], resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'PT_Portfolio' = None, order_manager: 'PT_OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None):
         """
         Initializes the SMACrossoverStrategy.
 
@@ -140,6 +140,17 @@ class SMACrossoverStrategy(BaseStrategy):
                 # --- Rule: Prevent Position Pyramiding ---
                 # Check if a position already exists for this symbol before entering a new one.
                 position = self.portfolio.get_position(symbol, self.primary_resolution)
+
+                # --- Live Debugging ---
+                if is_live_trading:
+                    self._log_live_decision_data(symbol, timestamp, {
+                        "ltp": ltp,
+                        "short_sma": short_sma,
+                        "long_sma": long_sma,
+                        "prev_short_sma": prev_short_sma,
+                        "prev_long_sma": prev_long_sma,
+                        "position_exists": bool(position)
+                    })
 
                 # Bullish Crossover
                 if short_sma > long_sma and prev_short_sma <= prev_long_sma and not position:

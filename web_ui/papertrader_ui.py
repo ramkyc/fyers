@@ -84,20 +84,19 @@ def render_page():
     if col1.button("Start Live Engine", disabled=st.session_state.is_engine_running, width='stretch'):
         with st.spinner("Attempting to start..."):
             success, message = start_engine()
-            st.session_state.is_engine_running = success
-            st.rerun()
+            time.sleep(2) # Give the engine time to create its PID file
+            # The script will rerun automatically after the widget interaction.
     if col2.button("Stop Live Engine", disabled=not st.session_state.is_engine_running, width='stretch'):
         with st.spinner("Sending stop signal..."):
             stop_engine()
-            st.session_state.is_engine_running = False
-            time.sleep(2)
-            st.rerun()
+            # The stop_engine function now waits for termination, so a long sleep here is not needed.
+            time.sleep(1)
+            # The script will rerun automatically.
     if col3.button("Stop and Restart", disabled=not st.session_state.is_engine_running, width='stretch', type="primary"):
         with st.spinner("Restarting engine..."):
             stop_engine()
-            time.sleep(3)
             success, message = start_engine()
-            st.rerun()
+            time.sleep(2) # Give the new engine time to start
 
     if is_running: st.success(f"**Status:** {status_message}")
     else: st.info(f"**Status:** {status_message}")
@@ -105,46 +104,61 @@ def render_page():
     st.markdown("---")
 
     # --- Auto-refreshing Fragment ---
-    # Determine if we should be refreshing and at what interval.
     is_market_open_now = is_market_working_day(datetime.date.today()) and NSE_MARKET_OPEN_TIME <= datetime.datetime.now().time() <= NSE_MARKET_CLOSE_TIME
     refresh_interval = st.sidebar.slider("UI Refresh Interval (s)", 5, 60, 10, key="live_refresh_interval", help="How often to refresh the live data below.")
     should_refresh = is_market_open_now and st.session_state.is_engine_running
 
-    # Use st.fragment to auto-refresh only this part of the UI without scrolling the whole page.
-    # The fragment will only run on a timer if should_refresh is True.
-    @st.fragment(run_every=f"{refresh_interval}s" if should_refresh else None)
-    def display_live_data():
+    # --- More Stable Auto-Refresh using Meta Tag ---
+    if should_refresh:
+        st.html(f"<meta http-equiv='refresh' content='{refresh_interval}'>")
+
+    # --- Live Data Display ---
+    col1, col2 = st.columns([3, 1])
+    with col1:
         st.subheader("Live Open Positions")
-        live_positions_container = st.empty()
+    
+    live_positions_container = st.empty()
 
-        # The `current_run_id` is now sourced directly from the engine status (PID file).
-        if st.session_state.is_engine_running and current_run_id:
-            positions_df = load_live_positions(current_run_id)
-            if not positions_df.empty:
-                with live_positions_container:
-                    st.dataframe(positions_df, width='stretch')
+    # The `current_run_id` is now sourced directly from the engine status (PID file).
+    if st.session_state.is_engine_running and current_run_id:
+        positions_df = load_live_positions(current_run_id)
+
+        # Calculate and display Total MTM
+        if not positions_df.empty:
+            total_mtm = positions_df['mtm'].sum()
+            with col2:
+                st.metric("Total MTM", f"₹{total_mtm:,.2f}")
+            with live_positions_container:
+                st.dataframe(positions_df, use_container_width=True)
         else:
-            live_positions_container.info(
-                "The live engine is currently stopped. Click 'Start Live Engine' to begin."
-            )
+            with col2:
+                st.metric("Total MTM", "₹0.00")
+    else:
+        live_positions_container.info(
+            "The live engine is currently stopped. Click 'Start Live Engine' to begin."
+        )
 
-        st.markdown("---")
-        st.subheader("Live Session Logs")
-        live_runs = [r for r in get_all_run_ids() if r.startswith('live_')]
-        if live_runs:
-            selected_run_id = st.selectbox("Select a Live Session to Analyze:", options=live_runs, key="live_run_selector")
-            
-            with st.spinner("Analyzing live session performance..."):
-                live_metrics = analyze_live_run(selected_run_id)
-            
-            if live_metrics:
-                st.subheader("Performance Summary")
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Total P&L", f"₹{live_metrics['total_pnl']:,.2f}", f"{live_metrics['total_pnl'] / (live_metrics['initial_cash'] or 1):.2%}")
-                col2.metric("Max Drawdown", f"{live_metrics['max_drawdown'] * 100:.2f}%")
-                col3.metric("Sharpe Ratio", f"{live_metrics['sharpe_ratio']:.2f}")
-                col4.metric("Win Rate", f"{live_metrics['win_rate']:.2%}")
-                col5.metric("Profit Factor", f"{live_metrics['profit_factor']:.2f}")
+    st.markdown("---")
+    st.subheader("Live Session Logs")
+    live_runs = [r for r in get_all_run_ids() if r.startswith('live_')]
+    if live_runs:
+        selected_run_id = st.selectbox("Select a Live Session to Analyze:", options=live_runs, key="live_run_selector")
+        
+        with st.spinner("Analyzing live session performance..."):
+            live_metrics, trade_log_df = analyze_live_run(selected_run_id)
+        
+        if live_metrics:
+            st.subheader("Performance Summary")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Total P&L", f"₹{live_metrics['total_pnl']:,.2f}", f"{live_metrics['total_pnl'] / (live_metrics['initial_cash'] or 1):.2%}")
+            col2.metric("Max Drawdown", f"{live_metrics['max_drawdown'] * 100:.2f}%")
+            col3.metric("Sharpe Ratio", f"{live_metrics['sharpe_ratio']:.2f}")
+            col4.metric("Win Rate", f"{live_metrics['win_rate']:.2%}")
+            col5.metric("Profit Factor", f"{live_metrics['profit_factor']:.2f}")
 
-    # Call the fragment to display the data. It will handle its own refresh cycle.
-    display_live_data()
+            st.subheader("Trade Log")
+            # The Equity Curve tab has been removed as requested.
+            if trade_log_df is not None and not trade_log_df.empty:
+                st.dataframe(trade_log_df, use_container_width=True)
+            else:
+                st.info("No trades have been executed in this session yet.")

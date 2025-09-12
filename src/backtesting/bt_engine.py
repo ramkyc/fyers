@@ -34,6 +34,7 @@ class BT_Engine:
         self.primary_resolution = self.resolutions[0] # The first resolution is considered primary for iteration
         self.all_loaded_data = {}
         self.bar_history = defaultdict(lambda: defaultdict(list)) # To maintain rolling history for strategies
+        self.warmup_period = 100 # Number of bars to pre-load for indicators
         # Connect in read-only mode to prevent locking issues with other processes (like data fetchers).
         db_uri = f'file:{self.db_file}?mode=ro'
         self.con = sqlite3.connect(db_uri, uri=True)
@@ -49,24 +50,26 @@ class BT_Engine:
         """
         all_data = {}
         for resolution in resolutions:
-            # Adjust date range for lower-frequency secondary resolutions
-            start_dt = self.start_datetime
+            # To warm up indicators, we need to fetch data starting from BEFORE the user's selected start date.
+            # We fetch `warmup_period` number of rows before the start_datetime.
+            # This is done by querying for a larger set and then splitting it.
+            
+            # A simple time-based lookback isn't reliable for bars. Instead, we'll fetch more rows.
+            # We query for all data up to the end_datetime and then programmatically find the warmup split.
             end_dt = self.end_datetime
-            if resolution != self.primary_resolution:
-                # For daily data, ensure we load the whole day's data
-                if resolution == 'D':
-                    start_dt = self.start_datetime.replace(hour=0, minute=0, second=0)
-                    end_dt = self.end_datetime.replace(hour=23, minute=59, second=59)
+            # A safe, larger start date to ensure we get enough warmup data.
+            # This can be optimized, but for now, it's robust.
+            start_dt_for_query = self.start_datetime - datetime.timedelta(days=30 if resolution != 'D' else 365)
 
             query = f"""
                 SELECT timestamp, symbol, open, high, low, low, close, volume
                 FROM historical_data
                 WHERE symbol IN ({','.join(['?']*len(symbols))})
                 AND resolution = ?
-                AND timestamp >= ? AND timestamp <= ? 
+                AND timestamp <= ?
                 ORDER BY timestamp ASC;
                 """
-            params = symbols + [resolution, start_dt, end_dt]
+            params = symbols + [resolution, end_dt]
             df = pd.read_sql_query(query, self.con, params=params)
             
             # Ensure timestamp column is datetime and normalize to be timezone-naive
@@ -104,7 +107,20 @@ class BT_Engine:
         print("-" * 70)
 
         # 1. Load historical data
-        all_loaded_data = self._load_data(symbols, self.resolutions)
+        self._load_data(symbols, self.resolutions)
+
+        # --- NEW: Pre-populate bar history for warm-up ---
+        start_timestamp_seconds = int(self.start_datetime.timestamp())
+        for res, df in self.all_loaded_data.items():
+            if df.empty: continue
+            # Get all data before the official start time for warm-up
+            warmup_df = df[df.index.get_level_values('timestamp') < start_timestamp_seconds]
+            for symbol in symbols:
+                symbol_warmup_df = warmup_df[warmup_df.index.get_level_values('symbol') == symbol]
+                # Take the last N rows for the warm-up period
+                symbol_warmup_df = symbol_warmup_df.tail(self.warmup_period)
+                self.bar_history[res][symbol] = symbol_warmup_df.reset_index().to_dict('records')
+        print("Bar history has been warmed up with pre-backtest data.")
         
         # Ensure primary resolution data is available
         if self.primary_resolution not in all_loaded_data or all_loaded_data[self.primary_resolution].empty:
@@ -112,6 +128,9 @@ class BT_Engine:
             return None, None, None
 
         primary_resolution_data = all_loaded_data[self.primary_resolution]
+        # Filter the primary data to only iterate over the user-defined backtest period
+        primary_resolution_data = primary_resolution_data[primary_resolution_data.index.get_level_values('timestamp') >= start_timestamp_seconds]
+
 
         # Generate a unique ID for this backtest run to isolate its logs
         timestamp_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -170,12 +189,14 @@ class BT_Engine:
                         # For 1-min data, we need all bars within the primary candle's interval.
                         # For other secondary data (like 'D'), we just need the latest one up to the current timestamp.
                         if self.primary_resolution == 'D' and res == '1':
-                            # When primary is Daily, get all 1-min bars for that entire day.
-                            day_start_ns = timestamp_ns
-                            day_end_ns = timestamp_ns + (24 * 60 * 60) # Start of next day
-                            relevant_data = res_data_df.loc[(timestamps_in_df >= day_start_ns) & (timestamps_in_df < day_end_ns)]
+                            # When primary is Daily, get all 1-min bars for that entire day by matching the date.
+                            current_day = pd.to_datetime(timestamp_ns, unit='s').date()
+                            # This is slow, but necessary for this specific cross-resolution analysis.
+                            daily_mask = pd.to_datetime(res_data_df.index.get_level_values('timestamp'), unit='s').date == current_day
+                            relevant_data = res_data_df[daily_mask]
                         elif res == '1' and self.primary_resolution != 'D':
                             try:
+                                # Get all 1-min bars that fall within the start and end of the current primary bar.
                                 primary_interval_seconds = pd.to_timedelta(f'{self.primary_resolution}min').total_seconds()
                                 start_of_bar_ns = timestamp_ns - primary_interval_seconds
                                 relevant_data = res_data_df.loc[(timestamps_in_df >= start_of_bar_ns) & (timestamps_in_df <= timestamp_ns)]

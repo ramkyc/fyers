@@ -1,9 +1,8 @@
 # src/paper_trading/pt_oms.py
 
-from src.paper_trading.pt_portfolio import PT_Portfolio
+from paper_trading.pt_portfolio import PT_Portfolio
 from fyers_apiv3.fyersModel import FyersModel
 import datetime
-from symbol_manager import SymbolManager
 import sqlite3
 import os
 import config # config.py is now in the project root
@@ -25,7 +24,6 @@ class PT_OrderManager:
         self.portfolio = portfolio
         self.run_id = run_id
         self.fyers = fyers
-        self.symbol_manager = SymbolManager() # Initialize the symbol manager
         # The db_setup.py script is now responsible for all table creation.
 
     def _log_trade(self, run_id, timestamp, symbol, action, quantity, price, is_live, timeframe):
@@ -82,16 +80,11 @@ class PT_OrderManager:
                 print(f"{timestamp} | REJECTED SELL: No open long position to sell for {symbol} on {timeframe} timeframe.")
                 return
 
-        # --- Lot Size Adjustment ---
-        lot_size = self.symbol_manager.get_lot_size(symbol)
-        if lot_size > 1:
-            # Round down to the nearest multiple of the lot size
-            final_quantity = (requested_quantity // lot_size) * lot_size
-        else:
-            final_quantity = requested_quantity
+        # --- SIMPLIFIED: Lot size is assumed to be 1 for stocks ---
+        final_quantity = requested_quantity
 
         if final_quantity <= 0:
-            print(f"{timestamp} | INFO: Order for {symbol} rejected. Requested quantity {requested_quantity} is less than lot size {lot_size}.")
+            print(f"{timestamp} | INFO: Order for {symbol} rejected. Final quantity is {final_quantity}, which is not a positive number.")
             return
 
         # --- Master Safety Check ---

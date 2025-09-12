@@ -11,6 +11,16 @@ if project_root not in sys.path:
 
 import config
 
+def add_column_if_not_exists(con, cursor, table_name, column_name, column_type):
+    """A helper function to add a column to a table if it doesn't already exist."""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [info[1] for info in cursor.fetchall()]
+    if column_name not in columns:
+        print(f"  - Migrating '{table_name}': adding '{column_name}' column...")
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+        con.commit() # Commit the change immediately
+        print(f"  - Migration complete for '{table_name}'.")
+
 def setup_databases():
     """
     Initializes all SQLite databases and creates the necessary tables
@@ -58,6 +68,7 @@ def setup_databases():
             # Table for symbol master data (lot sizes, etc.)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS symbol_master (
+                    fy_token TEXT,
                     symbol_ticker TEXT,
                     symbol_details TEXT,
                     lot_size INTEGER,
@@ -68,6 +79,8 @@ def setup_databases():
                     expiry_date TEXT
                 );
             """)
+            # Add migration for fy_token if it doesn't exist
+            add_column_if_not_exists(cursor, 'symbol_master', 'fy_token', 'TEXT')
             print("  - Table 'symbol_master' is ready.")
     except Exception as e:
         print(f"ERROR setting up historical market database: {e}")
@@ -114,19 +127,10 @@ def setup_databases():
             print(f"Connected to trading log database: {config.TRADING_DB_FILE}")
             cursor = con.cursor()
 
-            # --- Migration Logic to Add run_id if Missing ---
-            def add_column_if_not_exists(table_name, column_name, column_type):
-                cursor.execute(f"PRAGMA table_info({table_name})")
-                columns = [info[1] for info in cursor.fetchall()]
-                if column_name not in columns:
-                    print(f"  - Migrating '{table_name}': adding '{column_name}' column...")
-                    cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-                    print(f"  - Migration complete for '{table_name}'.")
-
             # Step 1: Create tables if they don't exist (without run_id initially for compatibility)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS paper_trades (
-                    timestamp TIMESTAMP, symbol TEXT, action TEXT, quantity INTEGER, price REAL, is_live BOOLEAN
+                    timestamp TIMESTAMP, symbol TEXT, action TEXT, quantity INTEGER, price REAL, is_live BOOLEAN, timeframe TEXT
                 );
             """)
             cursor.execute("""
@@ -136,8 +140,9 @@ def setup_databases():
             """)
 
             # Step 2: Run migration to add the 'run_id' column if it's missing
-            add_column_if_not_exists('paper_trades', 'run_id', 'TEXT')
-            add_column_if_not_exists('portfolio_log', 'run_id', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'paper_trades', 'run_id', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'paper_trades', 'timeframe', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'portfolio_log', 'run_id', 'TEXT')
 
             # Step 3: Now that the column is guaranteed to exist, create the index
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_run_id ON paper_trades(run_id);")
@@ -155,9 +160,14 @@ def setup_databases():
                     quantity INTEGER,
                     avg_price REAL,
                     ltp REAL,
-                    mtm REAL
-                );
+                    mtm REAL,
+                    PRIMARY KEY (run_id, symbol, timeframe)
+                ) WITHOUT ROWID;
             """)
+            add_column_if_not_exists(con, cursor, 'live_positions', 'stop_loss', 'REAL')
+            add_column_if_not_exists(con, cursor, 'live_positions', 'target1', 'REAL')
+            add_column_if_not_exists(con, cursor, 'live_positions', 'target2', 'REAL')
+            add_column_if_not_exists(con, cursor, 'live_positions', 'target3', 'REAL')
             print("  - Table 'live_positions' is ready.")
 
             con.commit()

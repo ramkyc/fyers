@@ -1,6 +1,8 @@
 # src/strategies/base_strategy.py
 
 from abc import ABC, abstractmethod
+# Correct the import path to be relative to the src directory
+from paper_trading.pt_oms import PT_OrderManager
 import datetime
 from typing import Dict
 import sys
@@ -10,7 +12,7 @@ class BaseStrategy(ABC):
     Abstract base class for all trading strategies.
     """
 
-    def __init__(self, symbols: list[str], portfolio: 'Portfolio', order_manager: 'OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'Portfolio' = None, order_manager: PT_OrderManager = None, params: dict[str, object] = None, resolutions: list[str] = None):
         """
         Initializes the strategy.
 
@@ -23,7 +25,7 @@ class BaseStrategy(ABC):
         """
         self.symbols: list[str] = symbols
         self.portfolio = portfolio
-        self.order_manager = order_manager
+        self.order_manager = order_manager # This will be set by the engine
         self.params: dict[str, object] = params or {}
         self.primary_resolution = resolutions[0] if resolutions else "1"
 

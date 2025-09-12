@@ -45,6 +45,8 @@ class PT_Engine(data_ws.FyersDataSocket):
         for strategy in self.strategies:
             strategy.portfolio = self.portfolio
             strategy.order_manager = self.oms
+        # Create a quick lookup map from timeframe to strategy instance
+        self.timeframe_to_strategy = {s.primary_resolution: s for s in self.strategies}
 
         self.last_known_prices = {} # To store the last price of each symbol
         self.tick_counter = 0 # Counter for batch committing
@@ -212,9 +214,6 @@ class PT_Engine(data_ws.FyersDataSocket):
         try:
             with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                 cursor = con.cursor()
-                # Clear old positions for this run_id to only show current state
-                cursor.execute("DELETE FROM live_positions WHERE run_id = ?", (self.run_id,))
-
                 if not self.portfolio.positions:
                     return
 
@@ -222,12 +221,24 @@ class PT_Engine(data_ws.FyersDataSocket):
                 for (symbol, timeframe), data in self.portfolio.positions.items():
                     ltp = self.last_known_prices.get(symbol, data['avg_price'])
                     mtm = (ltp - data['avg_price']) * data['quantity']
+
+                    # Get the corresponding strategy to fetch SL/TP details
+                    strategy = self.timeframe_to_strategy.get(timeframe)
+                    trade_details = strategy.active_trades.get(symbol) if strategy else None
+
                     positions_to_log.append((
                         self.run_id, timestamp.isoformat(), symbol, timeframe,
-                        data['quantity'], data['avg_price'], ltp, mtm
+                        data['quantity'], data['avg_price'], ltp, mtm,
+                        trade_details.get('stop_loss') if trade_details else None,
+                        trade_details.get('target1') if trade_details else None,
+                        trade_details.get('target2') if trade_details else None,
+                        trade_details.get('target3') if trade_details else None,
                     ))
                 
-                cursor.executemany("INSERT INTO live_positions VALUES (?,?,?,?,?,?,?,?)", positions_to_log)
+                cursor.executemany(
+                    "INSERT OR REPLACE INTO live_positions (run_id, timestamp, symbol, timeframe, quantity, avg_price, ltp, mtm, stop_loss, target1, target2, target3) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    positions_to_log
+                )
                 con.commit()
         except Exception as e:
             print(f"Error logging live positions: {e}")
@@ -340,24 +351,24 @@ class PT_Engine(data_ws.FyersDataSocket):
             if strategy.primary_resolution == resolution:
                 # Keep history to a reasonable length
                 max_lookback = max(strategy.params.get('long_window', 0), strategy.params.get('ema_slow', 0), 21)
-                max_history_len = max_lookback + 50
+                max_history_len = max_lookback + 150 # Increased buffer
                 if len(self.bar_history[history_key]) > max_history_len:
                     self.bar_history[history_key].pop(0)
 
                 # --- Prepare Multi-Timeframe Data Packet ---
-                # The strategy needs data for ALL its required resolutions, not just the one that completed.
                 market_data_for_strategy = defaultdict(dict)
-                # 1. Add the primary resolution data (the one that just completed)
-                market_data_for_strategy[resolution][symbol] = self.bar_history[history_key]
-                # 2. Add the latest data for all other secondary resolutions
-                for res_str_secondary in strategy.get_required_resolutions():
-                    if res_str_secondary != resolution:
-                        secondary_history_key = (symbol, res_str_secondary)
-                        if secondary_history_key in self.bar_history:
-                            # CRITICAL FIX: Secondary resolutions (like 'D') should provide only the LATEST bar (a dict),
-                            # not the entire history (a list), to match the strategy's expectation.
-                            latest_secondary_bar = self.bar_history[secondary_history_key][-1]
-                            market_data_for_strategy[res_str_secondary][symbol] = latest_secondary_bar
+                
+                # The strategy needs data for ALL its required resolutions.
+                for res in strategy.get_required_resolutions():
+                    history_key_for_res = (symbol, res)
+                    if history_key_for_res in self.bar_history:
+                        if res == 'D':
+                            # For daily data, provide the single latest bar as a list containing the dict.
+                            # This ensures that when the strategy creates a DataFrame, the columns are preserved.
+                            market_data_for_strategy[res][symbol] = [self.bar_history[history_key_for_res][-1]]
+                        else:
+                            # For intraday data, provide the full history
+                            market_data_for_strategy[res][symbol] = self.bar_history[history_key_for_res]
                 
                 try:
                     strategy.on_data(
@@ -425,20 +436,20 @@ class PT_Engine(data_ws.FyersDataSocket):
         try:
             # Connect to the LIVE database which now contains the prepared data
             with sqlite3.connect(f'file:{config.LIVE_MARKET_DB_FILE}?mode=ro', uri=True) as con:
-                # Get all unique resolutions present in the warm-up data
-                resolutions_in_db = pd.read_sql_query("SELECT DISTINCT resolution FROM live_strategy_data;", con)['resolution'].tolist()
+                # Get all unique symbols and resolutions that were prepared for this session.
+                all_prepared_data = pd.read_sql_query("SELECT DISTINCT symbol, resolution FROM live_strategy_data;", con)
 
-                for res in resolutions_in_db:
-                    for symbol in self.symbols_to_subscribe:
-                        query = "SELECT * FROM live_strategy_data WHERE symbol = ? AND resolution = ? ORDER BY timestamp ASC;"
-                        df = pd.read_sql_query(query, con, params=(symbol, res))
-                        
-                        if not df.empty:
-                            # Critical Fix: Ensure timestamps loaded from DB are datetime objects, not strings.
-                            df['timestamp'] = pd.to_datetime(df['timestamp'])
-                            history_key = (symbol, res)
-                            self.bar_history[history_key] = df.to_dict('records')
-                            print(f"  - Warmed up {len(self.bar_history[history_key])} bars for {symbol} at {res} resolution.")
+                # Iterate through all prepared data, not just the symbols we subscribe to.
+                # This ensures we load the daily data for underlying indices.
+                for _, row in all_prepared_data.iterrows():
+                    symbol, res = row['symbol'], row['resolution']
+                    query = "SELECT * FROM live_strategy_data WHERE symbol = ? AND resolution = ? ORDER BY timestamp ASC;"
+                    df = pd.read_sql_query(query, con, params=(symbol, res))
+                    
+                    if not df.empty:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        self.bar_history[(symbol, res)] = df.to_dict('records')
+                        print(f"  - Warmed up {len(df)} bars for {symbol} at {res} resolution.")
         except Exception as e:
             print(f"Warning: Could not warm up bar history from database. The engine will start 'cold'. Error: {e}")
 
@@ -466,8 +477,16 @@ class PT_Engine(data_ws.FyersDataSocket):
 
         if self.is_connected():
             self.unsubscribe(symbols=self.symbols_to_subscribe)
-        print(f"[{datetime.datetime.now()}] Closing WebSocket connection...")
-        self.close_connection()
+        
+        # --- Non-Blocking WebSocket Closure ---
+        # The close_connection() can sometimes block indefinitely.
+        # We will attempt to close it but will not wait for it, allowing the main process to exit.
+        # The OS will clean up the orphaned background thread.
+        try:
+            print(f"[{datetime.datetime.now()}] Closing WebSocket connection...")
+            self.close_connection()
+        except Exception as e:
+            print(f"[{datetime.datetime.now()}] Non-critical error during WebSocket closure: {e}")
 
         # --- Final Commit ---
         # No final commit needed as each message is committed automatically.
