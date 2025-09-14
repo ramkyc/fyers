@@ -14,7 +14,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import config
-from fetch_historical_data import get_top_nifty_stocks
+from src.fetch_historical_data import get_top_nifty_stocks
 from auth import get_fyers_model, get_access_token
 from fetch_symbol_master import fetch_and_store_symbol_masters
 from strategies import STRATEGY_MAPPING

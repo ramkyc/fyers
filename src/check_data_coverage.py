@@ -3,6 +3,7 @@
 import sqlite3
 import pandas as pd
 import os
+import argparse
 import sys
 
 # Add project root to path to allow importing config
@@ -12,7 +13,7 @@ if project_root not in sys.path:
 
 import config
 
-def check_data_coverage():
+def check_data_coverage(pivot_view=False):
     """
     Connects to the historical data database and prints a summary of the
     data coverage for each symbol and resolution.
@@ -56,11 +57,36 @@ def check_data_coverage():
             if df.empty:
                 print("No data found in the historical_data table.")
             else:
-                df['record_count'] = df['record_count'].map('{:,}'.format)
-                print(df.to_string())
+                # Calculate the total before any string formatting
+                total_records = df['record_count'].sum()
+
+                if pivot_view:
+                    print("\n--- Data Coverage Pivot Table (Record Counts) ---")
+                    # The 'record_count' is already an integer from the SQL query
+                    pivot_df = df.pivot_table(
+                        index='symbol',
+                        columns='resolution',
+                        values='record_count',
+                        aggfunc='sum', # Use sum, though each group should be unique
+                        fill_value=0   # Show 0 for missing combinations
+                    )
+                    # Ensure columns are in a logical order
+                    desired_columns = [res for res in ["D", "60", "30", "15", "5", "1"] if res in pivot_df.columns]
+                    pivot_df = pivot_df[desired_columns]
+                    # Format with commas for readability
+                    print(pivot_df.applymap('{:,}'.format).to_string())
+                else:
+                    df['record_count'] = df['record_count'].map('{:,}'.format)
+                    print(df.to_string())
+                
+                # Print the total at the end
+                print(f"\n--- Total Records in Table: {total_records:,} ---")
 
     except Exception as e:
         print(f"An error occurred while checking data coverage: {e}")
 
 if __name__ == "__main__":
-    check_data_coverage()
+    parser = argparse.ArgumentParser(description="Check historical data coverage.")
+    parser.add_argument("--pivot", action="store_true", help="Display the data coverage as a pivot table.")
+    args = parser.parse_args()
+    check_data_coverage(pivot_view=args.pivot)

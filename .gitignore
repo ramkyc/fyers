@@ -42,3 +42,6 @@ logs/
 data/*.sqlite
 data/live_config.yaml
 data/live_engine.pid
+
+# AI Assistant Config
+.claude/

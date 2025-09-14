@@ -8,8 +8,8 @@ import concurrent.futures
 
 from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.backtesting.bt_engine import BT_Engine
-from src.strategies import STRATEGY_MAPPING
-from web_ui.utils import get_all_symbols, get_market_time_options, load_log_data, get_all_run_ids, run_backtest_for_worker, run_and_capture_backtest
+from src.strategies import STRATEGY_MAPPING_BT # Use the backtesting-specific mapping
+from web_ui.utils import get_all_symbols, get_market_time_options, run_backtest_with_data_update
 import config
 
 def display_optimization_results(results_df):
@@ -50,7 +50,7 @@ def display_optimization_results(results_df):
     except Exception as e:
         st.error(f"Could not generate visualizations. This can happen if there are not enough data points for a grid. Error: {e}")
 
-def display_single_backtest_results(portfolio_result, last_prices, backtest_log):
+def display_single_backtest_results(portfolio_result, last_prices, backtest_log, debug_log):
     """Renders the UI for displaying single backtest results."""
     st.subheader("Performance Summary")
     analyzer = PerformanceAnalyzer(portfolio_result)
@@ -70,10 +70,12 @@ def display_single_backtest_results(portfolio_result, last_prices, backtest_log)
     else:
         st.info("No equity curve data was generated during the backtest.")
 
-    tab1, tab2 = st.tabs(["Trade Log", "Raw Backtest Log"])
+    tab1, tab2, tab3 = st.tabs(["Trade Log", "Strategy Debug Log", "Raw Backtest Log"])
     with tab1:
         st.dataframe(pd.DataFrame(portfolio_result.trades))
     with tab2:
+        st.dataframe(pd.DataFrame(debug_log))
+    with tab3:
         st.code(backtest_log)
 
 def render_page():
@@ -89,20 +91,34 @@ def render_page():
         resolution = st.selectbox("Select Timeframe", options=resolutions, index=resolutions.index("15"))
         time_options = get_market_time_options()
         
-        st.markdown("---")
-        st.markdown("##### End Date & Time")
-        end_date = st.date_input("End Date", value=datetime.date.today(), key="end_date")
-        end_time = st.selectbox("End Time", options=time_options, index=len(time_options) - 1, key="end_time")
-        end_datetime = datetime.datetime.combine(end_date, end_time)
+        # --- Reordered Date/Time Selection ---
+        # First, define the default dates to ensure they are calculated correctly.
+        default_end_date = datetime.date.today()
+        # Default the start date to the 1st of the previous month for a more relevant default range.
+        first_day_of_current_month = default_end_date.replace(day=1)
+        last_day_of_previous_month = first_day_of_current_month - datetime.timedelta(days=1)
+        default_start_date = last_day_of_previous_month.replace(day=1)
 
+        st.markdown("---")
         st.markdown("##### Start Date & Time")
-        start_date = st.date_input("Start Date", value=end_datetime.date() - datetime.timedelta(days=90), key="start_date")
+        start_date = st.date_input("Start Date", value=default_start_date, key="start_date")
         start_time = st.selectbox("Start Time", options=time_options, index=0, key="start_time")
         start_datetime = datetime.datetime.combine(start_date, start_time)
 
-        st.markdown("---")
-        selected_strategy_name = st.selectbox("Select Strategy", options=list(STRATEGY_MAPPING.keys()))
-        strategy_class = STRATEGY_MAPPING[selected_strategy_name]
+        st.markdown("##### End Date & Time")
+        end_date = st.date_input("End Date", value=default_end_date, key="end_date")
+        end_time = st.selectbox("End Time", options=time_options, index=len(time_options) - 1, key="end_time")
+        end_datetime = datetime.datetime.combine(end_date, end_time)
+
+        strategy_options = list(STRATEGY_MAPPING_BT.keys())
+        try:
+            # Find the index of the desired default strategy
+            default_strategy_index = strategy_options.index("Opening Price Crossover")
+        except ValueError:
+            default_strategy_index = 0 # Fallback to the first strategy if not found
+
+        selected_strategy_name = st.selectbox("Select Strategy", options=strategy_options, index=default_strategy_index)
+        strategy_class = STRATEGY_MAPPING_BT[selected_strategy_name]
 
         run_optimization = st.checkbox("Enable Parameter Optimization")
         strategy_params, optimization_params = {}, {}
@@ -136,8 +152,8 @@ def render_page():
             run_button_label = "Run Backtest"
 
         st.subheader("Common Parameters")
-        strategy_params['trade_value'] = st.number_input("Trade Value (INR)", min_value=1000.0, value=25000.0, step=1000.0, key="bt_common_trade_value")
-        initial_cash = st.number_input("Initial Cash", min_value=1000.0, value=200000.0, step=1000.0)
+        strategy_params['trade_value'] = st.number_input("Trade Value (INR)", min_value=1000.0, value=100000.0, step=1000.0, key="bt_common_trade_value")
+        initial_cash = st.number_input("Initial Cash", min_value=1000.0, value=5000000.0, step=1000.0)
         
         run_button_clicked = st.form_submit_button(run_button_label, width='stretch')
         if run_button_clicked:
@@ -185,16 +201,26 @@ def render_page():
                             st.error("Optimization run completed, but no results were generated.")
 
                 else: # Run a single backtest
-                    other_resolutions = set()
-                    if resolution != "D": other_resolutions.add("D")
-                    if selected_strategy_name == "Opening Price Crossover": other_resolutions.add("1")
-                    final_resolutions = [resolution] + list(other_resolutions)
-
-                    engine = BT_Engine(start_datetime=start_datetime, end_datetime=end_datetime, db_file=config.HISTORICAL_MARKET_DB_FILE, resolutions=final_resolutions)
-                    portfolio_result, last_prices, backtest_log = run_and_capture_backtest(engine, strategy_class, symbols_to_test, strategy_params, initial_cash, backtest_type)
+                    # --- INTELLIGENT RESOLUTION FETCHING ---
+                    # Instantiate the strategy to ask it what resolutions it needs,
+                    # instead of hardcoding rules in the UI.
+                    strategy_instance_for_resolutions = strategy_class(symbols=[], resolutions=[resolution])
+                    final_resolutions = strategy_instance_for_resolutions.get_required_resolutions()
+                    
+                    # Call the new wrapper function that includes the data update step
+                    portfolio_result, last_prices, backtest_log, debug_log = run_backtest_with_data_update(
+                        strategy_class=strategy_class,
+                        symbols=symbols_to_test,
+                        start_dt=start_datetime,
+                        end_dt=end_datetime,
+                        resolutions=final_resolutions,
+                        params=strategy_params,
+                        initial_cash=initial_cash,
+                        backtest_type=backtest_type
+                    )
 
                     if portfolio_result:
-                        display_single_backtest_results(portfolio_result, last_prices, backtest_log)
+                        display_single_backtest_results(portfolio_result, last_prices, backtest_log, debug_log)
                     else:
                         st.error("Backtest did not return any results.")
                         st.subheader("Backtest Log")

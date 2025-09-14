@@ -1,4 +1,4 @@
-# src/strategies/opening_price_crossover.py
+# src/strategies/bt_opening_price_crossover.py
 
 import datetime
 import pandas as pd
@@ -57,12 +57,6 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.implied_crossover_history: 'defaultdict[str, deque[float]]' = defaultdict(deque)
         self.debug_log = []
 
-    def _log_debug(self, message: str):
-        self.debug_log.append(message)
-
-    def get_debug_log(self) -> list[str]:
-        return self.debug_log
-
     @staticmethod
     def get_optimizable_params() -> list[dict]:
         """
@@ -89,18 +83,23 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 return f"{value:.2f}"
             return "nan"
 
-        print(
-            f"[{timestamp}] DEBUG FOR {symbol}:\n"
-            f"  - LTP: {_format_float(data.get('ltp'))}\n"
-            f"  - Daily Open: {_format_float(data.get('daily_open'))}\n"
-            f"  - EMA Fast/Slow: {_format_float(data.get('ema_fast'))} / {_format_float(data.get('ema_slow'))}\n"
-            f"  - EMA Bullish?: {data.get('is_ema_bullish')}\n"
-            f"  - Price Bullish (Candle)?: {data.get('is_price_bullish')}\n"
-            f"  - Sentiment Filter Passed?: {data.get('sentiment_filter_passed')}\n"
-            f"  - Crossover Spike?: {data.get('is_crossover_spike')}\n"
-            f"  - FINAL DECISION: {'Proceeding to entry check' if data.get('all_conditions_met') else 'Conditions not met'}\n"
-            f"  --------------------------------------------------"
-        )
+        # ANSI color codes for better readability in the console
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        RESET = '\033[0m'
+
+        def colorize(value, condition):
+            return f"{GREEN}{value}{RESET}" if condition else f"{RED}{value}{RESET}"
+
+        self._log_debug({
+            "timestamp": timestamp, "symbol": symbol, "ltp": data.get('ltp'),
+            "ema_fast": data.get('ema_fast'), "ema_slow": data.get('ema_slow'), "ema_bullish": data.get('is_ema_bullish'),
+            "candle_open": data.get('candle_open'), "price_bullish": data.get('is_price_bullish'),
+            "daily_open": data.get('daily_open'), "sentiment_bullish": data.get('sentiment_filter_passed'),
+            "crossover_count": data.get('crossover_count'), "avg_crossover_count": data.get('avg_crossover_count'), "crossover_spike": data.get('is_crossover_spike'),
+            "final_decision": 'TRADE' if data.get('all_conditions_met') else 'NO TRADE'
+        })
 
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         """
@@ -135,10 +134,9 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             daily_open_price = 0
             # Correctly get the daily data for the specific symbol being analyzed
             daily_data_for_symbol = analysis_market_data.get("D", {}).get(analysis_symbol)
-            # The engine now provides daily data as a list containing one dictionary.
-            # We must access the first element of the list.
-            if daily_data_for_symbol and isinstance(daily_data_for_symbol, list) and len(daily_data_for_symbol) > 0:
-                daily_open_price = daily_data_for_symbol[0].get('open', 0)
+            # The engine now provides daily data as a simple dictionary.
+            if daily_data_for_symbol and isinstance(daily_data_for_symbol, dict):
+                daily_open_price = daily_data_for_symbol.get('open', 0)
 
             # --- Indicator Calculations on the Analysis Symbol's Data ---
             # Ensure we have enough data to calculate indicators
@@ -170,7 +168,10 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
 
                 # Check Target 3 first (highest target)
                 if not trade_details.get('t3_hit', False) and latest_analysis['high'] >= trade_details['target3']:
-                    self._log_debug(f"{timestamp} | {symbol} | EXIT T3: Selling remaining {active_trade['quantity']} shares at {trade_details['target3']}")
+                    self._log_debug({ # Standardized log entry
+                        "timestamp": timestamp, "symbol": symbol, "ltp": trade_details['target3'],
+                        "final_decision": "EXIT T3", "details": f"Selling remaining {active_trade['quantity']} shares."
+                    })
                     self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
@@ -179,7 +180,10 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 if not trade_details.get('t2_hit', False) and latest_analysis['high'] >= trade_details['target2']:
                     qty_to_sell_t2 = int(trade_details['initial_quantity'] * self.exit_percent_target2)
                     if qty_to_sell_t2 > 0 and active_trade['quantity'] >= qty_to_sell_t2:
-                        self._log_debug(f"{timestamp} | {symbol} | EXIT T2: Selling {qty_to_sell_t2} shares at {trade_details['target2']}")
+                        self._log_debug({ # Standardized log entry
+                            "timestamp": timestamp, "symbol": symbol, "ltp": trade_details['target2'],
+                            "final_decision": "EXIT T2", "details": f"Selling {qty_to_sell_t2} shares."
+                        })
                         self.sell(symbol, self.primary_resolution, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
                         trade_details['t2_hit'] = True
 
@@ -187,13 +191,19 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 if not trade_details.get('t1_hit', False) and latest_analysis['high'] >= trade_details['target1']:
                     qty_to_sell = int(trade_details['initial_quantity'] * self.exit_percent_target1)
                     if qty_to_sell > 0 and active_trade['quantity'] >= qty_to_sell:
-                        self._log_debug(f"{timestamp} | {symbol} | EXIT T1: Selling {qty_to_sell} shares at {trade_details['target1']}")
+                        self._log_debug({ # Standardized log entry
+                            "timestamp": timestamp, "symbol": symbol, "ltp": trade_details['target1'],
+                            "final_decision": "EXIT T1", "details": f"Selling {qty_to_sell} shares."
+                        })
                         self.sell(symbol, self.primary_resolution, qty_to_sell, trade_details['target1'], timestamp, is_live)
                         trade_details['t1_hit'] = True
 
                 # Check Stop Loss
                 if latest_analysis['low'] <= trade_details['stop_loss']:
-                    self._log_debug(f"{timestamp} | {symbol} | EXIT SL: Selling remaining {active_trade['quantity']} shares at {trade_details['stop_loss']}")
+                    self._log_debug({ # Standardized log entry
+                        "timestamp": timestamp, "symbol": symbol, "ltp": trade_details['stop_loss'],
+                        "final_decision": "EXIT SL", "details": f"Selling remaining {active_trade['quantity']} shares."
+                    })
                     self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['stop_loss'], timestamp, is_live)
                     self.active_trades[symbol] = None # Close trade
                     continue
@@ -237,13 +247,16 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 all_conditions_met = is_ema_bullish and is_price_bullish and sentiment_filter_passed and is_crossover_spike
                 self._log_live_decision_data(symbol, timestamp, {
                     "ltp": latest_analysis['close'],
+                    "candle_open": latest_analysis['open'],
                     "daily_open": daily_open_price,
                     "ema_fast": ema_fast,
                     "ema_slow": ema_slow,
+                    "crossover_count": crossover_count,
+                    "avg_crossover_count": average_implied_crossover_count,
                     "is_ema_bullish": is_ema_bullish,
                     "is_price_bullish": is_price_bullish,
                     "sentiment_filter_passed": sentiment_filter_passed,
-                    "is_crossover_spike": is_crossover_spike, # Added for debugging
+                    "is_crossover_spike": is_crossover_spike,
                     "all_conditions_met": all_conditions_met
                 })
 
@@ -268,7 +281,10 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                         quantity = int(capital_to_deploy / entry_price)
 
                         if quantity > 0:
-                            self._log_debug(f"{timestamp} | {symbol} | ENTRY: Buying {quantity} shares at {entry_price:.2f}")
+                            self._log_debug({ # Standardized log entry
+                                "timestamp": timestamp, "symbol": symbol, "ltp": entry_price,
+                                "final_decision": "ENTRY", "details": f"Buying {quantity} shares."
+                            })
                             self.buy(symbol, self.primary_resolution, quantity, entry_price, timestamp, is_live)
                             self.active_trades[symbol] = {
                                 'stop_loss': stop_loss,

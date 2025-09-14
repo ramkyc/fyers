@@ -8,6 +8,25 @@ import datetime
 # self-updating and more robust.
 # Hardcoded NSE market holidays for 2025
 # Source: Various financial news websites, confirmed against multiple sources.
+NSE_HOLIDAYS_2024 = [
+    datetime.date(2024, 1, 22),  # Ayodhya Ram Mandir
+    datetime.date(2024, 1, 26),  # Republic Day
+    datetime.date(2024, 3, 8),   # Maha Shivratri
+    datetime.date(2024, 3, 25),  # Holi
+    datetime.date(2024, 3, 29),  # Good Friday
+    datetime.date(2024, 4, 11),  # Id-Ul-Fitr
+    datetime.date(2024, 4, 17),  # Ram Navami
+    datetime.date(2024, 5, 1),   # Maharashtra Day
+    datetime.date(2024, 5, 20),  # General Elections
+    datetime.date(2024, 6, 17),  # Bakri Id
+    datetime.date(2024, 7, 17),  # Muharram
+    datetime.date(2024, 8, 15),  # Independence Day
+    datetime.date(2024, 10, 2),  # Mahatma Gandhi Jayanti
+    datetime.date(2024, 11, 1),  # Diwali
+    datetime.date(2024, 11, 15), # Gurunanak Jayanti
+    datetime.date(2024, 12, 25), # Christmas
+]
+
 NSE_HOLIDAYS_2025 = [
     datetime.date(2025, 2, 26),  # Maha Shivratri
     datetime.date(2025, 3, 14),  # Holi
@@ -34,7 +53,9 @@ def get_trading_holidays(year: int) -> list[datetime.date]:
     Returns a list of trading holidays for a given year.
     Currently hardcoded for 2025.
     """
-    # This function can be enhanced later to fetch holidays dynamically.
+    if year == 2024:
+        return NSE_HOLIDAYS_2024
+    # This can be enhanced later to fetch holidays dynamically for other years.
     return NSE_HOLIDAYS_2025 if year == 2025 else []
 
 def is_market_working_day(date: datetime.date) -> bool:
@@ -52,7 +73,7 @@ def is_market_working_day(date: datetime.date) -> bool:
         return False
 
     # Check for holidays
-    if date in NSE_HOLIDAYS_2025:
+    if date in get_trading_holidays(date.year):
         return False
 
     return True

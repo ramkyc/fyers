@@ -53,23 +53,19 @@ class BT_Engine:
             # To warm up indicators, we need to fetch data starting from BEFORE the user's selected start date.
             # We fetch `warmup_period` number of rows before the start_datetime.
             # This is done by querying for a larger set and then splitting it.
-            
-            # A simple time-based lookback isn't reliable for bars. Instead, we'll fetch more rows.
-            # We query for all data up to the end_datetime and then programmatically find the warmup split.
-            end_dt = self.end_datetime
-            # A safe, larger start date to ensure we get enough warmup data.
-            # This can be optimized, but for now, it's robust.
+            # --- OPTIMIZATION: Define a more precise start date for the query. ---
+            # Instead of loading all data, we load from a calculated start date that includes a buffer for indicator warm-up.
             start_dt_for_query = self.start_datetime - datetime.timedelta(days=30 if resolution != 'D' else 365)
 
             query = f"""
-                SELECT timestamp, symbol, open, high, low, low, close, volume
+                SELECT timestamp, symbol, open, high, low, close, volume
                 FROM historical_data
                 WHERE symbol IN ({','.join(['?']*len(symbols))})
                 AND resolution = ?
-                AND timestamp <= ?
+                AND timestamp BETWEEN ? AND ? -- This clause makes the loading efficient
                 ORDER BY timestamp ASC;
                 """
-            params = symbols + [resolution, end_dt]
+            params = symbols + [resolution, start_dt_for_query, self.end_datetime]
             df = pd.read_sql_query(query, self.con, params=params)
             
             # Ensure timestamp column is datetime and normalize to be timezone-naive
@@ -123,11 +119,11 @@ class BT_Engine:
         print("Bar history has been warmed up with pre-backtest data.")
         
         # Ensure primary resolution data is available
-        if self.primary_resolution not in all_loaded_data or all_loaded_data[self.primary_resolution].empty:
+        if self.primary_resolution not in self.all_loaded_data or self.all_loaded_data[self.primary_resolution].empty:
             print(f"No data found for the primary resolution ({self.primary_resolution}) and given symbols/date range. Aborting backtest.")
-            return None, None, None
+            return None, None, None, [] # Return 4 values to match the expected tuple
 
-        primary_resolution_data = all_loaded_data[self.primary_resolution]
+        primary_resolution_data = self.all_loaded_data[self.primary_resolution]
         # Filter the primary data to only iterate over the user-defined backtest period
         primary_resolution_data = primary_resolution_data[primary_resolution_data.index.get_level_values('timestamp') >= start_timestamp_seconds]
 
@@ -171,7 +167,7 @@ class BT_Engine:
             # Prepare market data for all resolutions for the current timestamp
             current_market_data_all_resolutions = {}
             for res in self.resolutions:
-                res_data_df = all_loaded_data[res]
+                res_data_df = self.all_loaded_data[res]
                 res_group = pd.DataFrame()
 
                 if not res_data_df.empty:
@@ -235,8 +231,12 @@ class BT_Engine:
                             data_for_res[symbol].append(bar_data)
                         
                         # If it's not 1-min data, we only want the single latest bar, not a list.
-                        current_market_data_all_resolutions[res] = {k: (v if res == '1' else v[0]) for k, v in data_for_res.items()}
-                current_market_data_all_resolutions.setdefault(res, {})
+                        if res != '1':
+                            # For other secondary resolutions (like 'D'), the strategy expects a simple dictionary for the single bar, not a list.
+                            # This is the definitive fix for the empty debug log issue.
+                            data_for_res = {k: v[0] for k, v in data_for_res.items() if v}
+
+                        current_market_data_all_resolutions[res] = data_for_res
 
             # --- Rule: Time-Windowed Entries & Strategy Execution ---
             if self.start_datetime.time() <= timestamp.time() <= self.end_datetime.time():
@@ -275,11 +275,11 @@ class BT_Engine:
         # Get the last known prices for the final P&L calculation
         last_prices = primary_resolution_data.groupby('symbol')['close'].last().to_dict()
         analyzer = PerformanceAnalyzer(portfolio)
-        analyzer.print_performance_report(last_prices, run_id)
+        analyzer.print_performance_report(last_prices, run_id) # This prints to console
         print("-" * 70)
         print(f"Backtest for {strategy_class.__name__} complete.")
         print("-" * 70 + "\n")
-        return portfolio, last_prices, run_id # Return the portfolio, last prices, and run_id for further analysis
+        return portfolio, last_prices, run_id, strategy.get_debug_log() # Return the debug log as well
 
     def __del__(self):
         """

@@ -3,8 +3,9 @@
 from collections import defaultdict
 import pandas as pd
 from src.paper_trading.pt_oms import PT_OrderManager
+import pandas_ta as ta
 from src.paper_trading.pt_portfolio import PT_Portfolio
-from strategies.base_strategy import BaseStrategy
+from .base_strategy import BaseStrategy
 import numpy as np
 from typing import Dict
 import datetime
@@ -42,8 +43,6 @@ class SMACrossoverStrategy(BaseStrategy):
         # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
         # If resolutions is None, it implies a live trading context.
         self.primary_resolution = resolutions[0] if resolutions else "1"
-        self.short_sma: 'defaultdict[str, pd.Series]' = defaultdict(pd.Series)
-        self.long_sma: 'defaultdict[str, pd.Series]' = defaultdict(pd.Series)
 
     @staticmethod
     def get_optimizable_params() -> list[dict]:
@@ -75,34 +74,6 @@ class SMACrossoverStrategy(BaseStrategy):
         """
         return [self.primary_resolution]
 
-    def _log_live_decision_data(self, symbol: str, timestamp: datetime.datetime, data: dict):
-        """Helper to log the data used for making a live trade decision."""
-        def _format_float(value):
-            """Safely formats a float or returns 'nan'."""
-            if isinstance(value, (int, float)) and not np.isnan(value):
-                return f"{value:.2f}"
-            return "nan"
-
-        ltp = data.get('ltp', 'N/A')
-        short_sma = data.get('short_sma', 'N/A')
-        long_sma = data.get('long_sma', 'N/A')
-        prev_short_sma = data.get('prev_short_sma', 'N/A')
-        prev_long_sma = data.get('prev_long_sma', 'N/A')
-        position_exists = data.get('position_exists', 'N/A')
-        
-        bullish_crossover_check = "N/A"
-        if all(isinstance(v, (int, float)) and not np.isnan(v) for v in [short_sma, long_sma, prev_short_sma, prev_long_sma]):
-             bullish_crossover_check = (short_sma > long_sma and prev_short_sma <= prev_long_sma)
-
-        print(
-            f"[{timestamp}] DEBUG FOR {symbol}:\n"
-            f"  - LTP: {_format_float(ltp)}\n"
-            f"  - Short SMA (curr/prev): {_format_float(short_sma)} / {_format_float(prev_short_sma)}\n"
-            f"  - Long SMA (curr/prev): {long_sma:.2f} / {_format_float(prev_long_sma)}\n"
-            f"  - Position Exists: {position_exists}\n"
-            f"  - Bullish Crossover Condition Met: {bullish_crossover_check}\n"
-            f"  --------------------------------------------------"
-        )
     def on_data(self, timestamp: datetime, market_data_all_resolutions: Dict[str, Dict[str, Dict[str, object]]], **kwargs):
         is_live_trading = kwargs.get('is_live_trading', False)
         data = market_data_all_resolutions.get(self.primary_resolution, {})
@@ -116,44 +87,49 @@ class SMACrossoverStrategy(BaseStrategy):
                 continue # Not enough data to calculate the long-term SMA
 
             df = pd.DataFrame(bar_history_list)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # The engine provides timestamps as integers (seconds). We must specify the unit.
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
             df = df.set_index('timestamp')
 
             ltp = df['close'].iloc[-1]
 
-            # --- Calculate SMAs using the full history in the DataFrame ---
-            self.short_sma[symbol] = df['close'].rolling(window=self.short_window).mean()
-            self.long_sma[symbol] = df['close'].rolling(window=self.long_window).mean()
-
-            # Ensure we have at least two data points to check for a crossover
-            if len(self.short_sma[symbol]) < 2 or len(self.long_sma[symbol]) < 2:
-                continue # Not enough data for a crossover signal yet
+            # --- Indicator Calculations using pandas-ta for efficiency ---
+            df.ta.sma(length=self.short_window, append=True)
+            df.ta.sma(length=self.long_window, append=True)
 
             # Get latest and previous SMA values
-            short_sma = self.short_sma[symbol].iloc[-1]
-            long_sma = self.long_sma[symbol].iloc[-1]
-            prev_short_sma = self.short_sma[symbol].iloc[-2]
-            prev_long_sma = self.long_sma[symbol].iloc[-2]
+            latest_indicators = df.iloc[-1]
+            previous_indicators = df.iloc[-2]
+
+            short_sma = latest_indicators[f'SMA_{self.short_window}']
+            long_sma = latest_indicators[f'SMA_{self.long_window}']
+            prev_short_sma = previous_indicators[f'SMA_{self.short_window}']
+            prev_long_sma = previous_indicators[f'SMA_{self.long_window}']
 
             if not np.isnan(short_sma) and not np.isnan(long_sma) and \
                not np.isnan(prev_short_sma) and not np.isnan(prev_long_sma):
-                # --- Rule: Prevent Position Pyramiding ---
-                # Check if a position already exists for this symbol before entering a new one.
                 position = self.portfolio.get_position(symbol, self.primary_resolution)
 
-                # --- Live Debugging ---
-                if is_live_trading:
-                    self._log_live_decision_data(symbol, timestamp, {
-                        "ltp": ltp,
-                        "short_sma": short_sma,
-                        "long_sma": long_sma,
-                        "prev_short_sma": prev_short_sma,
-                        "prev_long_sma": prev_long_sma,
-                        "position_exists": bool(position)
-                    })
+                # --- Decision Logic ---
+                is_bullish_crossover = short_sma > long_sma and prev_short_sma <= prev_long_sma
+                is_bearish_crossover = short_sma < long_sma and prev_short_sma >= prev_long_sma
+                
+                final_decision = "NO TRADE"
+                if is_bullish_crossover and not position:
+                    final_decision = "BUY"
+                elif is_bearish_crossover and position and position['quantity'] > 0:
+                    final_decision = "SELL"
+
+                # --- Structured Debug Logging ---
+                self._log_debug({
+                    "timestamp": timestamp, "symbol": symbol, "ltp": ltp,
+                    "short_sma": short_sma, "long_sma": long_sma,
+                    "prev_short_sma": prev_short_sma, "prev_long_sma": prev_long_sma,
+                    "final_decision": final_decision
+                })
 
                 # Bullish Crossover
-                if short_sma > long_sma and prev_short_sma <= prev_long_sma and not position:
+                if final_decision == "BUY":
                     if ltp > 0:
                         capital_to_deploy = self.portfolio.get_capital_for_position(symbol, self.primary_resolution, self.trade_value)
                         quantity_to_buy = int(capital_to_deploy / ltp)
@@ -161,5 +137,5 @@ class SMACrossoverStrategy(BaseStrategy):
                             self.buy(symbol, self.primary_resolution, quantity_to_buy, ltp, timestamp, is_live_trading)
 
                 # Bearish Crossover
-                elif short_sma < long_sma and prev_short_sma >= prev_long_sma and position and position['quantity'] > 0:
+                elif final_decision == "SELL":
                     self.sell(symbol, self.primary_resolution, abs(position['quantity']), ltp, timestamp, is_live_trading)

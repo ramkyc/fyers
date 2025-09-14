@@ -28,6 +28,15 @@ class BaseStrategy(ABC):
         self.order_manager = order_manager # This will be set by the engine
         self.params: dict[str, object] = params or {}
         self.primary_resolution = resolutions[0] if resolutions else "1"
+        self.debug_log = []
+
+    def _log_debug(self, message: dict):
+        """Logs a structured debug message."""
+        self.debug_log.append(message)
+
+    def get_debug_log(self) -> list[dict]:
+        """Returns the collected debug log."""
+        return self.debug_log
 
     @staticmethod
     def get_optimizable_params() -> list[dict]:

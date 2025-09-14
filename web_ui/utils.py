@@ -1,14 +1,16 @@
 # web_ui/utils.py
 
 import streamlit as st
-import sqlite3
 import pandas as pd
 import os
 import datetime
 import json
+import sqlite3
 
 import config
 from src.strategies import STRATEGY_MAPPING
+from src.fetch_historical_data import fetch_and_store_historical_data, _build_fix_list
+from src.auth import get_fyers_model, get_access_token
 
 from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.paper_trading.pt_portfolio import PT_Portfolio
@@ -49,9 +51,83 @@ def run_and_capture_backtest(engine, strategy_class, symbols, params, initial_ca
     from contextlib import redirect_stdout
     f = io.StringIO()
     with redirect_stdout(f):
-        portfolio_result, last_prices, run_id = engine.run(strategy_class=strategy_class, symbols=symbols, params=params, initial_cash=initial_cash, backtest_type=backtest_type)
+        portfolio_result, last_prices, run_id, debug_log = engine.run(strategy_class=strategy_class, symbols=symbols, params=params, initial_cash=initial_cash, backtest_type=backtest_type)
     backtest_log = f.getvalue()
-    return portfolio_result, last_prices, backtest_log
+    return portfolio_result, last_prices, backtest_log, debug_log
+
+def _check_data_availability(symbols: list, resolutions: list, start_dt: datetime.datetime, end_dt: datetime.datetime) -> bool:
+    """
+    Checks if the required historical data for a backtest is present in the database.
+    This is a simplified check focusing on the date range.
+    """
+    print("--- Checking data availability for backtest period ---")
+    try:
+        with sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True) as con:
+            for symbol in symbols:
+                for res in resolutions:
+                    query = "SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts FROM historical_data WHERE symbol = ? AND resolution = ?"
+                    df = pd.read_sql_query(query, con, params=(symbol, res))
+                    
+                    if df.empty or df.iloc[0]['min_ts'] is None:
+                        print(f"  - Data missing for {symbol} ({res}). Triggering download.")
+                        return False # Data does not exist at all
+
+                    min_ts = pd.to_datetime(df.iloc[0]['min_ts'])
+                    max_ts = pd.to_datetime(df.iloc[0]['max_ts'])
+
+                    # Check if the backtest range is fully contained within the available data range
+                    if not (min_ts <= start_dt and max_ts >= end_dt):
+                        print(f"  - Data range incomplete for {symbol} ({res}). Have [{min_ts} to {max_ts}], need [{start_dt} to {end_dt}]. Triggering download.")
+                        return False
+            
+            print("--- All required data is available. Skipping download. ---")
+            return True # All checks passed
+
+    except Exception as e:
+        print(f"Warning: Could not verify data availability due to an error: {e}. Proceeding with data fetch as a precaution.")
+        return False
+
+def run_backtest_with_data_update(strategy_class, symbols, start_dt, end_dt, resolutions, params, initial_cash, backtest_type):
+    """
+    A helper function for the Streamlit UI that first ensures historical data is
+    up-to-date and then runs the backtest. This replaces the direct call to
+    run_and_capture_backtest.
+
+    Args:
+        strategy_class: The strategy class to be tested.
+        symbols (list): List of symbols for the backtest.
+        start_dt (datetime): Start datetime of the backtest.
+        end_dt (datetime): End datetime of the backtest.
+        resolutions (list): List of resolutions for the backtest.
+        params (dict): Strategy parameters.
+        initial_cash (float): Initial cash for the portfolio.
+        backtest_type (str): 'Positional' or 'Intraday'.
+
+    Returns:
+        The results from the backtesting engine's run method, plus the log.
+    """
+    from src.backtesting.bt_engine import BT_Engine # Local import
+
+    try:
+        # --- Step 1: Update Historical Data ---
+        # First, check if the data for the requested period already exists.
+        data_is_sufficient = _check_data_availability(symbols, resolutions, start_dt, end_dt)
+
+        if not data_is_sufficient:
+            with st.spinner("Required data is missing or incomplete. Fetching updates... This may take a moment."):
+                fetch_and_store_historical_data(
+                    symbols=symbols,
+                    resolutions=resolutions
+                )
+        st.success("Historical data is up-to-date.")
+
+        # --- Step 2: Run the Backtest (reusing the existing capture logic) ---
+        engine = BT_Engine(start_datetime=start_dt, end_datetime=end_dt, db_file=config.HISTORICAL_MARKET_DB_FILE, resolutions=resolutions)
+        return run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash, backtest_type) # Returns 4 items now
+
+    except Exception as e:
+        st.error(f"An error occurred during the process: {e}")
+        return None, None, None, None
 
 @st.cache_data(ttl=3600) # Cache for 1 hour
 def get_market_time_options(interval_minutes=15):
@@ -90,18 +166,32 @@ def load_log_data(query, params=()):
 @st.cache_data(ttl=600) # Cache for 10 minutes
 def get_all_symbols():
     """Fetches all unique symbols from the historical data table."""
-    if not os.path.exists(config.HISTORICAL_MARKET_DB_FILE):
-        st.warning(f"Historical market data file not found at {config.HISTORICAL_MARKET_DB_FILE}. Please run `python src/fetch_historical_data.py` to generate it.")
-        return []
-    try:
-        # Each function should create its own connection to ensure thread safety.
-        with sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True) as con:
-            query = "SELECT DISTINCT symbol FROM historical_data ORDER BY symbol;"
-            df = pd.read_sql_query(query, con)
-            return df['symbol'].tolist() if not df.empty else []
-    except Exception as e:
-        st.error(f"Error reading symbols from historical database: {e}")
-        return []
+    # --- PERFORMANCE OPTIMIZATION ---
+    # Querying the database, even the symbol_master, introduces a slight delay.
+    # Since the universe is static (Nifty50 + 4 indices), we hardcode the list
+    # for instantaneous loading in the UI.
+    # This list is derived from the data_coverage.txt file.
+    return sorted([
+        "BSE:BANKEX-INDEX", "BSE:SENSEX-INDEX", "NSE:ADANIENT-EQ", 
+        "NSE:ADANIPORTS-EQ", "NSE:APOLLOHOSP-EQ", "NSE:ASIANPAINT-EQ", 
+        "NSE:AXISBANK-EQ", "NSE:BAJAJ-AUTO-EQ", "NSE:BAJAJFINSV-EQ", 
+        "NSE:BAJFINANCE-EQ", "NSE:BEL-EQ", "NSE:BHARTIARTL-EQ", 
+        "NSE:BPCL-EQ", "NSE:BRITANNIA-EQ", "NSE:CIPLA-EQ", 
+        "NSE:COALINDIA-EQ", "NSE:DIVISLAB-EQ", "NSE:DRREDDY-EQ", 
+        "NSE:EICHERMOT-EQ", "NSE:ETERNAL-EQ", "NSE:GRASIM-EQ", 
+        "NSE:HCLTECH-EQ", "NSE:HDFCBANK-EQ", "NSE:HDFCLIFE-EQ", 
+        "NSE:HEROMOTOCO-EQ", "NSE:HINDALCO-EQ", "NSE:HINDUNILVR-EQ", 
+        "NSE:ICICIBANK-EQ", "NSE:INDUSINDBK-EQ", "NSE:INFY-EQ", 
+        "NSE:ITC-EQ", "NSE:JIOFIN-EQ", "NSE:JSWSTEEL-EQ", 
+        "NSE:KOTAKBANK-EQ", "NSE:LT-EQ", "NSE:LTIM-EQ", "NSE:M&M-EQ", 
+        "NSE:MARUTI-EQ", "NSE:NESTLEIND-EQ", "NSE:NIFTY50-INDEX", 
+        "NSE:NIFTYBANK-INDEX", "NSE:NTPC-EQ", "NSE:ONGC-EQ", 
+        "NSE:POWERGRID-EQ", "NSE:RELIANCE-EQ", "NSE:SBILIFE-EQ", 
+        "NSE:SBIN-EQ", "NSE:SHRIRAMFIN-EQ", "NSE:SUNPHARMA-EQ", 
+        "NSE:TATACONSUM-EQ", "NSE:TATAMOTORS-EQ", "NSE:TATASTEEL-EQ", 
+        "NSE:TCS-EQ", "NSE:TECHM-EQ", "NSE:TITAN-EQ", "NSE:TRENT-EQ", 
+        "NSE:ULTRACEMCO-EQ", "NSE:WIPRO-EQ"
+    ])
 
 @st.cache_data(ttl=10) # Cache for 10 seconds for better responsiveness
 def get_all_run_ids():

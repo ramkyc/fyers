@@ -13,7 +13,6 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from auth import get_access_token, get_fyers_model
-from fetch_historical_data import get_top_nifty_stocks, fetch_and_store_historical_data
 from market_calendar import is_market_working_day
 from fetch_symbol_master import fetch_and_store_symbol_masters # Direct import
 from prepare_live_data import prepare_live_strategy_data # Direct import
@@ -63,16 +62,7 @@ class TradingScheduler:
             with open(stocks_config_path, 'r') as f:
                 stocks_config = yaml.safe_load(f) or {}
             # For live trading, we ONLY fetch data for the top 10 stocks.
-            symbols_to_fetch = stocks_config.get('symbols', [])
-            
-            fetch_and_store_historical_data(
-                fyers=get_fyers_model(get_access_token()),
-                symbols=symbols_to_fetch,
-                resolutions=['1', '5', '15', '30', '60', 'D'],
-                mode='live_startup' # Use the new, fast mode
-            )
-
-        print(f"[{current_time}] Step 2: Preparing live strategy data (warming up cache)...")
+        
         prepare_live_strategy_data()
 
         try:
