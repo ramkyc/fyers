@@ -126,6 +126,13 @@ class BT_Engine:
         primary_resolution_data = self.all_loaded_data[self.primary_resolution]
         # Filter the primary data to only iterate over the user-defined backtest period
         primary_resolution_data = primary_resolution_data[primary_resolution_data.index.get_level_values('timestamp') >= start_timestamp_seconds]
+        # DEBUG: Print number of rows and sample after filtering
+        print(f"[DEBUG] primary_resolution_data rows after filtering: {len(primary_resolution_data)}")
+        if not primary_resolution_data.empty:
+            print("[DEBUG] Sample rows after filtering:")
+            print(primary_resolution_data.head())
+        else:
+            print("[DEBUG] primary_resolution_data is empty after filtering. No data to backtest.")
 
 
         # Generate a unique ID for this backtest run to isolate its logs
@@ -279,6 +286,17 @@ class BT_Engine:
         print("-" * 70)
         print(f"Backtest for {strategy_class.__name__} complete.")
         print("-" * 70 + "\n")
+        # DEBUG: Print equity curve for inspection
+        print("\n[DEBUG] Equity curve sample:")
+        for entry in portfolio.equity_curve[:5]:
+            print(entry)
+        print(f"[DEBUG] Total equity curve points: {len(portfolio.equity_curve)}")
+        # Check for missing 'pnl' keys
+        missing_pnl = [i for i, entry in enumerate(portfolio.equity_curve) if 'pnl' not in entry]
+        if missing_pnl:
+            print(f"[DEBUG] WARNING: {len(missing_pnl)} entries missing 'pnl' key. First few: {missing_pnl[:5]}")
+        else:
+            print("[DEBUG] All entries have 'pnl' key.")
         return portfolio, last_prices, run_id, strategy.get_debug_log() # Return the debug log as well
 
     def __del__(self):

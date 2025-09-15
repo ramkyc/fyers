@@ -38,7 +38,9 @@ class PT_Portfolio:
             {'timestamp': timestamp, 
              'value': summary['total_portfolio_value'],
              'cash': summary['final_cash'],
-             'holdings': summary['holdings_value']
+             'holdings': summary['holdings_value'],
+             # Add the cumulative P&L to match the backtesting portfolio
+             'pnl': summary['total_pnl']
             }
         )
 

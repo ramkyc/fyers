@@ -134,7 +134,10 @@ def fetch_and_store_historical_data(symbols: list, resolutions: list):
                             start_date = datetime.datetime.strptime(config.DEFAULT_START_DATE_DAILY, "%Y-%m-%d").date()
 
                         end_date = datetime.date.today()
-                        
+
+                        # Market close time: 15:30:00 IST = 10:00:00 UTC
+                        market_close_time_utc = datetime.time(10, 0, 0)
+
                         if start_date <= end_date:
                             for start_chunk, end_chunk in _get_date_chunks(start_date, end_date, 30):
                                 print(f"  - Fetching new D data for {symbol} from {start_chunk.strftime('%Y-%m-%d')} to {end_chunk.strftime('%Y-%m-%d')}...")
@@ -142,7 +145,12 @@ def fetch_and_store_historical_data(symbols: list, resolutions: list):
                                 response = fyers.history(data=data)
                                 if response.get("code") == 200 and response.get("candles"):
                                     candles = response["candles"]
-                                    data_to_insert = [(datetime.datetime.fromtimestamp(c[0]), symbol, c[1], c[2], c[3], c[4], c[5], "D") for c in candles]
+                                    data_to_insert = []
+                                    for c in candles:
+                                        # Set timestamp to market close (UTC)
+                                        bar_date = datetime.datetime.utcfromtimestamp(c[0]).date()
+                                        bar_dt = datetime.datetime.combine(bar_date, market_close_time_utc)
+                                        data_to_insert.append((bar_dt, symbol, c[1], c[2], c[3], c[4], c[5], "D"))
                                     cursor.executemany(f"INSERT OR IGNORE INTO {HISTORICAL_TABLE} VALUES (?,?,?,?,?,?,?,?)", data_to_insert)
                                     con.commit()
                                 time.sleep(0.5) # Rate limiting

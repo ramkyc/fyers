@@ -63,13 +63,6 @@ def display_single_backtest_results(portfolio_result, last_prices, backtest_log,
     col4.metric("Win Rate", f"{metrics['win_rate']:.2%}", help="The percentage of trades that were profitable.")
     col5.metric("Profit Factor", f"{metrics['profit_factor']:.2f}", help="The ratio of gross profits to gross losses. A value greater than 1 indicates a profitable system.")
 
-    st.subheader("Equity Curve")
-    if portfolio_result.equity_curve:
-        equity_df = pd.DataFrame(portfolio_result.equity_curve)
-        st.line_chart(equity_df.set_index('timestamp'))
-    else:
-        st.info("No equity curve data was generated during the backtest.")
-
     tab1, tab2, tab3 = st.tabs(["Trade Log", "Strategy Debug Log", "Raw Backtest Log"])
     with tab1:
         st.dataframe(pd.DataFrame(portfolio_result.trades))
@@ -78,6 +71,19 @@ def display_single_backtest_results(portfolio_result, last_prices, backtest_log,
     with tab3:
         st.code(backtest_log)
 
+    st.subheader("Equity Curve")
+    if portfolio_result.equity_curve:
+        equity_df = pd.DataFrame(portfolio_result.equity_curve)
+        if 'pnl' in equity_df.columns:
+            # --- ENHANCEMENT: Plot Cumulative P&L instead of absolute value ---
+            # This makes the performance changes much more visible regardless of initial capital.
+            st.line_chart(equity_df.set_index('timestamp')['pnl'])
+        else:
+            st.warning("No 'pnl' column found in equity curve data. Please check your backtest logic.")
+            st.dataframe(equity_df)
+    else:
+        st.info("No equity curve data was generated during the backtest.")
+
 def render_page():
     """Renders the entire Backtesting page UI."""
     # --- Sidebar Configuration ---
@@ -85,7 +91,7 @@ def render_page():
     with st.sidebar.form(key='backtest_form'):
         all_symbols = get_all_symbols()
         # Default to an empty list for symbols, letting the user choose.
-        symbols_to_test = st.multiselect("Select Symbols", options=all_symbols, default=[])
+        symbols_to_test = st.multiselect("Select Symbols", options=all_symbols, default=[], placeholder="select one or more symbols")
         backtest_type = st.radio("Backtest Type", ('Positional', 'Intraday'), index=0, help="**Positional**: Holds trades across multiple days. **Intraday**: All open positions are force-closed at the end of each day.")
         resolutions = ["D", "60", "30", "15", "5", "1"]
         resolution = st.selectbox("Select Timeframe", options=resolutions, index=resolutions.index("15"))

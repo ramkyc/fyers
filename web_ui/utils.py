@@ -61,13 +61,13 @@ def _check_data_availability(symbols: list, resolutions: list, start_dt: datetim
     This is a simplified check focusing on the date range.
     """
     print("--- Checking data availability for backtest period ---")
+
     try:
         with sqlite3.connect(f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro', uri=True) as con:
             for symbol in symbols:
                 for res in resolutions:
                     query = "SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts FROM historical_data WHERE symbol = ? AND resolution = ?"
                     df = pd.read_sql_query(query, con, params=(symbol, res))
-                    
                     if df.empty or df.iloc[0]['min_ts'] is None:
                         print(f"  - Data missing for {symbol} ({res}). Triggering download.")
                         return False # Data does not exist at all
@@ -75,12 +75,15 @@ def _check_data_availability(symbols: list, resolutions: list, start_dt: datetim
                     min_ts = pd.to_datetime(df.iloc[0]['min_ts'])
                     max_ts = pd.to_datetime(df.iloc[0]['max_ts'])
 
-                    # Check if the backtest range is fully contained within the available data range
-                    if not (min_ts <= start_dt and max_ts >= end_dt):
-                        print(f"  - Data range incomplete for {symbol} ({res}). Have [{min_ts} to {max_ts}], need [{start_dt} to {end_dt}]. Triggering download.")
-                        return False
-            
-            print("--- All required data is available. Skipping download. ---")
+                    # Only check weekdays (Mon-Fri) in the backtest period
+                    current = start_dt
+                    while current <= end_dt:
+                        if current.weekday() < 5:  # 0=Monday, ..., 4=Friday
+                            if not (min_ts <= current <= max_ts):
+                                print(f"  - Data missing for {symbol} ({res}) on {current.date()}. Have [{min_ts} to {max_ts}]. Triggering download.")
+                                return False
+                        current += datetime.timedelta(days=1)
+            print("--- All required data is available for weekdays. Skipping download. ---")
             return True # All checks passed
 
     except Exception as e:

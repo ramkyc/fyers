@@ -29,15 +29,18 @@ class BT_Portfolio:
         """
         Logs the portfolio's value to the in-memory equity curve.
         """
+        print(f"[DEBUG] log_portfolio_value called at {timestamp} with current_prices: {current_prices}")
         summary = self.get_performance_summary(current_prices)
-        
-        self.equity_curve.append(
-            {'timestamp': timestamp, 
-             'value': summary['total_portfolio_value'],
-             'cash': summary['final_cash'],
-             'holdings': summary['holdings_value']
-            }
-        )
+        print(f"[DEBUG] Performance summary: {summary}")
+        entry = {
+            'timestamp': timestamp,
+            'value': summary['total_portfolio_value'],
+            'cash': summary['final_cash'],
+            'holdings': summary['holdings_value'],
+            'pnl': summary['total_pnl']
+        }
+        print(f"[DEBUG] Appending to equity_curve: {entry}")
+        self.equity_curve.append(entry)
 
     def execute_order(self, symbol: str, timeframe: str, action: str, quantity: int, price: float, timestamp: datetime):
         """

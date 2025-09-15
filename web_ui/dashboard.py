@@ -14,6 +14,15 @@ from web_ui import backtesting_ui, papertrader_ui
 
 def main():
     """Main function to run the Streamlit dashboard."""
+
+    # --- Ensure SymbolManager is initialized at startup ---
+    try:
+        from src.symbol_manager import SymbolManager
+        SymbolManager().reload_master_data()
+        print("SymbolManager initialized at dashboard startup.")
+    except Exception as e:
+        print(f"[Startup] Failed to initialize SymbolManager: {e}")
+
     st.set_page_config(layout="wide")
     st.title("TraderBuddy Dashboard")
 
