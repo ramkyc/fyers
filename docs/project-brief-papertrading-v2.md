@@ -20,6 +20,8 @@ The configuration system will be refactored to be more automated, robust, and lo
 
 *   **Segregated Configuration Files:** The single `live_config.yaml` will be replaced by two new files in the project's **root directory**:
     *   `pt_config_stocks.yaml`: This file will be automatically populated at the start of each trading day with the top 10 NIFTY 50 stocks by market capitalization, fetched live from the NSE website.
+    *   `pt_config_options.yaml`: This file will be automatically populated at the start of each trading day with the At-The-Money (ATM) Call and Put option symbols for the NIFTY, BANKNIFTY, SENSEX, and BANKEX indices. *   **Segregated Configuration Files:** The single `live_config.yaml` will be replaced by two new files in the project's **root directory**:
+    *   `pt_config_stocks.yaml`: This file will be automatically populated at the start of each trading day with all NIFTY 50 stocks by market capitalization, fetched live from the NSE website.
     *   `pt_config_options.yaml`: This file will be automatically populated at the start of each trading day with the At-The-Money (ATM) Call and Put option symbols for the NIFTY, BANKNIFTY, SENSEX, and BANKEX indices.
 *   **Dynamic ATM Calculation:** The system will determine the ATM strike for each index based on the closing price of the previous 1-minute candle or the 09:15 AM candle, whichever is later.
 *   **Default Trading Universe:** By default, the paper trading engine will trade all instruments listed in both new configuration files. The user will retain the ability to override this selection from the dashboard.

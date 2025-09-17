@@ -36,10 +36,10 @@ class PT_OrderManager:
             with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                 con.execute(
                     """
-                    INSERT INTO paper_trades (run_id, timestamp, symbol, timeframe, action, quantity, price, is_live)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO live_paper_trades (run_id, timestamp, symbol, timeframe, action, quantity, price)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (run_id, timestamp.isoformat(), symbol, timeframe, action, quantity, price, is_live)
+                    (run_id, timestamp.isoformat(), symbol, timeframe, action, quantity, price)
                 )
                 con.commit()
         except Exception as e:
@@ -115,7 +115,7 @@ class PT_OrderManager:
                 if response and response.get("code") == 200:
                     # Order placed successfully. Now update portfolio and log the trade.
                     self.portfolio.execute_order(symbol, timeframe, action, final_quantity, price, timestamp)
-                    self._log_trade(self.run_id, timestamp, symbol, action, final_quantity, price, True, timeframe)
+                    self._log_trade(self.run_id, timestamp, symbol, action, final_quantity, price, is_live_trading, timeframe)
                 else:
                     print(f"{timestamp} | LIVE Order failed for {symbol}: {response.get('message', 'Unknown error')}")
 
@@ -124,4 +124,4 @@ class PT_OrderManager:
 
         else: # This is now only for live paper trading (simulation)
             self.portfolio.execute_order(symbol, timeframe, action, final_quantity, price, timestamp)
-            self._log_trade(self.run_id, timestamp, symbol, action, final_quantity, price, True, timeframe) # It's a live paper trade
+            self._log_trade(self.run_id, timestamp, symbol, action, final_quantity, price, is_live_trading, timeframe)

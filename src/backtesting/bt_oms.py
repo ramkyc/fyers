@@ -28,11 +28,11 @@ class BT_OrderManager:
             with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                 con.execute(
                     """
-                    INSERT INTO paper_trades (run_id, timestamp, symbol, timeframe, action, quantity, price, is_live)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO backtest_trades (run_id, timestamp, symbol, timeframe, action, quantity, price)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (self.run_id, signal['timestamp'].isoformat(), signal['symbol'], signal['timeframe'],
-                     signal['action'], signal['quantity'], signal['price'], False)
+                     signal['action'], signal['quantity'], signal['price'])
                 )
                 con.commit()
         except Exception as e:
@@ -60,5 +60,10 @@ class BT_OrderManager:
         signal['quantity'] = final_quantity
 
         # --- Simulated Order Execution ---
-        self.portfolio.execute_order(signal['symbol'], signal['timeframe'], signal['action'], signal['quantity'], signal['price'], signal['timestamp'])
+        # --- FIX: Ensure the price from the signal is always used ---
+        # The strategy is responsible for determining the execution price. For market orders,
+        # it's the candle's close. For stop-loss or take-profit exits, it's the
+        # specific trigger price. The OMS must honor this price.
+        execution_price = signal['price']
+        self.portfolio.execute_order(signal['symbol'], signal['timeframe'], signal['action'], signal['quantity'], execution_price, signal['timestamp'])
         self._log_trade(signal)

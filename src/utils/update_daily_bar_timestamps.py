@@ -5,7 +5,7 @@ import sqlite3
 import datetime
 
 DB_PATH = 'data/historical_market_data.sqlite'  # Adjust path if needed
-MARKET_CLOSE_UTC = datetime.time(10, 0, 0)  # 15:30 IST = 10:00 UTC
+MARKET_CLOSE_IST = datetime.time(15, 30, 0)  # 3:30 PM IST
 
 def update_daily_timestamps(db_path):
     con = sqlite3.connect(db_path)
@@ -17,7 +17,7 @@ def update_daily_timestamps(db_path):
     for rowid, ts in rows:
         # Parse the date part only
         date_part = datetime.datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').date()
-        new_dt = datetime.datetime.combine(date_part, MARKET_CLOSE_UTC)
+        new_dt = datetime.datetime.combine(date_part, MARKET_CLOSE_IST)
         updates.append((new_dt.strftime('%Y-%m-%d %H:%M:%S'), rowid))
     # Update all rows
     cur.executemany("UPDATE historical_data SET timestamp = ? WHERE rowid = ?", updates)

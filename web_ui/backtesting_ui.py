@@ -9,6 +9,7 @@ import concurrent.futures
 from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.backtesting.bt_engine import BT_Engine
 from src.strategies import STRATEGY_MAPPING_BT # Use the backtesting-specific mapping
+from src.market_calendar import is_market_working_day
 from web_ui.utils import get_all_symbols, get_market_time_options, run_backtest_with_data_update
 import config
 
@@ -67,7 +68,10 @@ def display_single_backtest_results(portfolio_result, last_prices, backtest_log,
     with tab1:
         st.dataframe(pd.DataFrame(portfolio_result.trades))
     with tab2:
-        st.dataframe(pd.DataFrame(debug_log))
+        if debug_log:
+            st.dataframe(pd.DataFrame(debug_log))
+        else:
+            st.info("The strategy did not generate any debug logs.")
     with tab3:
         st.code(backtest_log)
 
@@ -100,10 +104,15 @@ def render_page():
         # --- Reordered Date/Time Selection ---
         # First, define the default dates to ensure they are calculated correctly.
         default_end_date = datetime.date.today()
-        # Default the start date to the 1st of the previous month for a more relevant default range.
-        first_day_of_current_month = default_end_date.replace(day=1)
-        last_day_of_previous_month = first_day_of_current_month - datetime.timedelta(days=1)
-        default_start_date = last_day_of_previous_month.replace(day=1)
+        # Default the start date to 5 trading sessions prior to today.
+        trading_days_to_find = 5
+        trading_days_found = 0
+        current_check_date = default_end_date
+        while trading_days_found < trading_days_to_find:
+            current_check_date -= datetime.timedelta(days=1)
+            if is_market_working_day(current_check_date):
+                trading_days_found += 1
+        default_start_date = current_check_date
 
         st.markdown("---")
         st.markdown("##### Start Date & Time")
@@ -187,7 +196,7 @@ def render_page():
                         for p in param_combinations:
                             p['trade_value'] = strategy_params['trade_value']
                         
-                        worker_args = [(start_date_str, end_date_str, config.HISTORICAL_MARKET_DB_FILE, [resolution], symbols_to_test, params, initial_cash, selected_strategy_name, backtest_type) for params in param_combinations]
+                        worker_args = [(start_date_str, end_date_str, config.HISTORICAL_MARKET_DB_FILE, resolution, symbols_to_test, params, initial_cash, selected_strategy_name, backtest_type) for params in param_combinations]
                         results = []
                         progress_text = st.empty()
                         progress_bar = st.progress(0)

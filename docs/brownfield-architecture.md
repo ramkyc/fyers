@@ -1,10 +1,10 @@
 # Brownfield Architecture: Fyers Trading Platform
 
-*This document reflects the state of the codebase after the implementation of the event-driven backtesting engine.*
+*This document reflects the state of the codebase as of the implementation of live configuration management and separated trade logs.*
 
 ## 1. Project Overview
 
-This project is a trading platform that interfaces with the Fyers API. It provides a comprehensive suite of tools for both backtesting trading strategies against historical data and simulating live paper trading. The primary user interface is a web-based dashboard built with Streamlit, which allows users to configure and run backtests, optimize strategy parameters, and view performance reports and logs.
+This project is a trading platform that interfaces with the Fyers API. It provides a comprehensive suite of tools for backtesting trading strategies against historical data and simulating live paper trading. The primary user interface is a web-based dashboard built with Streamlit, which allows users to configure and run backtests, manage live trading settings, and view performance reports.
 
 The system is designed with a clear separation of concerns, isolating data fetching, strategy logic, backtesting, live trading, and user interface into distinct components.
 
@@ -16,16 +16,17 @@ The system is designed with a clear separation of concerns, isolating data fetch
 - **Functionality**: Handles the OAuth2 process, including generating auth codes, creating access/refresh tokens, and storing them in `fyers_tokens.json`. Provides helper functions to get an authenticated `fyersModel` instance.
 
 ### `src/data` & `src/fetch_historical_data.py`
-- **Purpose**: Responsible for populating the historical market database.
-- **Key Files**: `fetch_historical_data.py`, `archive_live_data.py`
+- **Purpose**: Responsible for populating and managing the historical market database.
+- **Key Files**: `fetch_historical_data.py`, `fetch_symbol_master.py`, `archive_live_data.py`, `check_data_coverage.py`
 - **Functionality**:
     - `fetch_historical_data.py`: Intelligently fetches historical candle data for multiple resolutions. It handles API rate limits by breaking large date ranges into smaller, valid chunks. On subsequent runs, it only downloads data that is missing, making it highly efficient.
+    - `fetch_symbol_master.py`: Downloads the complete Fyers symbol master files (for Equity and F&O), processes them, and stores critical information like `lot_size` into the `symbol_master` table.
     - `archive_live_data.py`: A daily maintenance script that moves captured live tick data from the temporary live database to the permanent historical database.
     - `check_data_coverage.py`: A utility script to connect to the historical database and print a detailed summary of the data coverage for each symbol and resolution.
 
 ### `src/tick_collector.py`
-- **Purpose**: A scheduler script that manages the lifecycle of the live trading engine.
-- **Functionality**: Starts the `LiveTradingEngine` before market open, stops it after market close, and triggers the `archive_live_data.py` script to clean up daily data.
+- **Purpose**: A class-based scheduler (`TradingScheduler`) that manages the lifecycle of the live trading engine.
+- **Functionality**: It reads its configuration from `live_config.yaml`, starts the `LiveTradingEngine` before market open, stops it after market close, and triggers the `archive_live_data.py` script to clean up daily data. It also manages its own process via a PID file (`live_engine.pid`).
 
 ### `src/paper_trading`
 - **Purpose**: Contains the core logic for managing a trading account's state.
@@ -33,7 +34,7 @@ The system is designed with a clear separation of concerns, isolating data fetch
 - **Functionality**:
     - `Portfolio`: Tracks cash, positions, and P&L for a trading session.
     - `OrderManager`: Simulates or places real orders, updating the portfolio accordingly.
-    - `LiveTradingEngine`: Inherits directly from the Fyers `FyersDataSocket` class. It acts as the primary event handler for all WebSocket communications (connection, messages, errors, closure), processes live ticks, and stores them in the database.
+    - `LiveTradingEngine`: Inherits from the Fyers `FyersDataSocket` class. It acts as the primary event handler for all WebSocket communications, processes live ticks, resamples them into 1-minute bars, and feeds them to the active strategy.
 
 ### `src/backtesting`
 - **Purpose**: Provides a flexible, event-driven backtesting engine.
@@ -53,24 +54,26 @@ The system is designed with a clear separation of concerns, isolating data fetch
 
 ### `web_ui`
 - **Purpose**: The main user interface for the application.
-- **Key Files**: `dashboard.py`, `backtesting_ui.py`, `papertrader_ui.py`, `utils.py`
+- **Key Files**: `dashboard.py`, `backtesting_ui.py`, `papertrader_ui.py`, `utils.py`, `live_config_manager.py`
 - **Functionality**: A modular Streamlit application.
     - `dashboard.py`: Acts as the main entry point and router, displaying the top-level menu.
     - `backtesting_ui.py`: Contains all UI components for the backtesting and optimization tab.
-    - `papertrader_ui.py`: Contains all UI components for the live paper trading monitor.
+    - `papertrader_ui.py`: Contains UI components for the live paper trading monitor, including controls to configure the live engine and start/stop it.
+    - `live_config_manager.py`: A crucial module that acts as the bridge between the UI and the live engine. It manages the `live_config.yaml` and `live_engine.pid` files, providing a safe interface to start, stop, and configure the background process.
     - `utils.py`: A collection of shared helper functions for loading data and connecting to databases, used by the other UI modules.
 
 ## 3. Data Architecture & Flow
 
-The application uses three separate SQLite databases to maintain a clean separation of data. A daily archiving process ensures that live data is managed efficiently.
+The application uses three separate SQLite databases to maintain a clean separation of data.
 
 - **`data/historical_market_data.sqlite`**:
   - **Purpose**: Stores all permanent historical market data.
   - **Tables**:
     - `historical_data`: Contains historical OHLCV candle data.
     - `historical_ticks`: Contains archived tick-by-tick data from live sessions.
-  - **Populated By**: `src/fetch_historical_data.py` and `src/archive_live_data.py`.
-  - **Read By**: `src/backtesting/engine.py` and `web_ui/dashboard.py`.
+    - `symbol_master`: Contains instrument details, including lot sizes, downloaded from Fyers.
+  - **Populated By**: `src/fetch_historical_data.py`, `src/fetch_symbol_master.py`, and `src/archive_live_data.py`.
+  - **Read By**: `src/backtesting/engine.py`, `src/paper_trading/engine.py`, and `web_ui/dashboard.py`.
 
 - **`data/live_market_data.sqlite`**:
   - **Purpose**: A temporary database to store live tick data captured during a single trading session.
@@ -81,15 +84,20 @@ The application uses three separate SQLite databases to maintain a clean separat
 - **`data/trading_log.sqlite`**:
   - **Purpose**: Stores the results of trading activity.
   - **Tables**:
-    - `paper_trades`: A log of all individual trades from both backtesting and live simulation, distinguished by a `run_id`.
-    - `portfolio_log`: A time-series log of portfolio value, used for generating equity curves for live trading sessions. Backtests generate a separate, in-memory equity curve that is displayed directly on the dashboard.
-  - **Populated By**: `src/paper_trading/oms.py` (for both backtesting and live trading).
-  - **Read By**: `web_ui/dashboard.py` to display trade logs from any run.
+    - `backtest_trades`: A log of all individual trades from backtesting runs, distinguished by a `run_id`.
+    - `live_paper_trades`: A log of all individual trades from live paper trading sessions.
+    - `bt_portfolio_log`: A time-series log of portfolio value for backtest runs.
+    - `pt_portfolio_log`: A time-series log of portfolio value for live paper trading runs.
+    - `live_positions`: Stores the state of currently open positions in the live paper trading engine.
+    - `pt_live_debug_log`: A structured log for debugging messages from the live engine.
+  - **Populated By**: `src/paper_trading/oms.py`, `src/paper_trading/portfolio.py`.
+  - **Read By**: `web_ui/dashboard.py` to display logs and reports.
 
 ## 4. Configuration Management
 
 - **`.env` file**: Stores all secrets and environment-specific variables (API keys, credentials, etc.). This file is NOT committed to version control.
 - **`config.py`**: Loads variables from the `.env` file and exposes them to the application. It also defines key file paths, ensuring consistency across the project.
+- **`data/live_config.yaml`**: A user-managed file that defines the strategy, symbols, and parameters for the live trading engine. It is written to by the Streamlit dashboard and read by `tick_collector.py` on startup. This file is added to `.gitignore`.
 
 ## 5. Key Entry Points & Usage
 
@@ -106,17 +114,19 @@ The application uses three separate SQLite databases to maintain a clean separat
 
 3.  **Fetch Historical Data**:
     ```bash
+    python src/fetch_symbol_master.py
+    ```bash
     python src/fetch_historical_data.py
     ```
 
 4.  **Run the Dashboard**:
     ```bash
-    streamlit run web_ui/dashboard.py
+    streamlit run web_ui/dashboard.py 
     ```
 
 5.  **Run Live Trading (Optional)**:
-    - This is now a scheduled, automated process. To run it, deploy the code to the production environment where it will be managed by a scheduler like `cron`.
-    - The main entry point for this process is `src/tick_collector.py`.
+    - The live trading engine is now managed directly from the Streamlit dashboard.
+    - Navigate to the "Live Paper Trading Monitor" tab, configure your strategy, and click "Start Live Engine".
 
 ## 6. Identified Technical Debt & Risks
 
@@ -124,7 +134,6 @@ The application uses three separate SQLite databases to maintain a clean separat
 - **Hardcoded Holidays**: The `src/market_calendar.py` file contains a hardcoded list of holidays for 2025. This will need to be updated annually or replaced with a dynamic holiday calendar API.
 - **Live Order Execution**: The live order placement in `oms.py` assumes the order is filled at the signal price. A production-grade system would need to poll for the actual fill price and handle partial fills.
 - **Indefinite Tick Growth**: The `historical_ticks` table will grow indefinitely. A future enhancement could involve partitioning this data by month or year into separate files or tables for better performance.
-- **Disabled Live Strategy Execution**: The `LiveTradingEngine` has been refactored to be a reliable tick collector, but the logic to execute strategies on live data has been temporarily disabled. This requires a new architectural approach for resampling ticks into bars before feeding them to a strategy.
 - **WebSocket Deadlock (Mitigated)**: A previous version of the code could hang on shutdown because the `unsubscribe()` call would block the main thread while waiting for a response from the background thread. This was resolved by calling `connect(is_async=True)`, which prevents the library from blocking the main thread.
 
 ## 7. Project Source Tree
@@ -137,12 +146,15 @@ fyers/
 ├── .gitignore
 ├── CHANGELOG.md
 ├── config.py
-├── data/
+├── data/ # Ignored by git
 │   ├── historical_market_data.sqlite
+│   ├── live_config.yaml
+│   ├── live_engine.pid
 │   ├── live_market_data.sqlite
 │   └── trading_log.sqlite
 ├── docs/
 │   ├── brownfield-architecture.md
+│   ├── architecture-live-config.md
 │   ├── environment-management.md
 │   ├── brainstorming-session-results.md
 │   ├── Plan.md
@@ -166,8 +178,8 @@ fyers/
 │   │   └── portfolio.py
 │   ├── check_data_coverage.py
 │   ├── db_setup.py
-│   ├── debug_live_engine.py
 │   ├── fetch_historical_data.py
+│   ├── fetch_symbol_master.py
 │   ├── market_calendar.py
 │   ├── paper_trading/
 │   │   ├── __init__.py
@@ -183,10 +195,16 @@ fyers/
 │   │   ├── base_strategy.py
 │   │   ├── opening_price_crossover.py
 │   │   └── simple_ma_crossover.py
-│   └── tick_collector.py
+│   ├── tick_collector.py
+│   └── trading_scheduler.py
 ├── tests/
 │   ├── paper_trading/
 │   └── strategies/
 └── web_ui/
-    └── dashboard.py
+    ├── __init__.py
+    ├── backtesting_ui.py
+    ├── dashboard.py
+    ├── live_config_manager.py
+    ├── papertrader_ui.py
+    └── utils.py
 ```

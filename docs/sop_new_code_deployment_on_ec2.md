@@ -1,7 +1,7 @@
 # Standard Operating Procedure: New Code Deployment on EC2
 
 This document outlines the standard, step-by-step procedure for safely deploying new code updates to the live production environment on the AWS EC2 instance. Following these steps ensures that the running application is always using the latest, correct version of the code and its dependencies.
-
+ 
 ## Deployment Workflow
 
 After committing and pushing changes from your local machine, follow these steps on the EC2 instance to deploy the update:
@@ -20,7 +20,12 @@ After committing and pushing changes from your local machine, follow these steps
     git reset --hard origin/main
     ```
 
-4.  **Sync Environment**: Activate the virtual environment (`poetry shell`) and install any new or updated dependencies. This is a safe and idempotent command.
+4.  **Update Database Schema (If Needed)**: If your changes included database modifications, run the setup script. This is safe to run and will only create tables if they don't exist.
+    ```bash
+    python src/db_setup.py
+    ```
+
+5.  **Sync Environment**: Activate the virtual environment (`poetry shell`) and install any new or updated dependencies. This is a safe and idempotent command.
     ```bash
     poetry install
     ```

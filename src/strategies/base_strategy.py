@@ -12,7 +12,7 @@ class BaseStrategy(ABC):
     Abstract base class for all trading strategies.
     """
 
-    def __init__(self, symbols: list[str], portfolio: 'Portfolio' = None, order_manager: PT_OrderManager = None, params: dict[str, object] = None, resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'Portfolio' = None, order_manager: PT_OrderManager = None, params: dict[str, object] = None, resolutions: list[str] = None, primary_resolution: str = None):
         """
         Initializes the strategy.
 
@@ -21,18 +21,33 @@ class BaseStrategy(ABC):
             portfolio (Portfolio): The portfolio object to interact with.
             order_manager (OrderManager, optional): The order manager object to execute trades.
             params (dict[str, object], optional): A dictionary of strategy-specific parameters.
-            resolutions (list[str], optional): The data resolutions used, with the first being primary.
+            resolutions (list[str], optional): All data resolutions the strategy needs access to.
+            primary_resolution (str, optional): The main resolution this instance is responsible for.
         """
         self.symbols: list[str] = symbols
         self.portfolio = portfolio
         self.order_manager = order_manager # This will be set by the engine
         self.params: dict[str, object] = params or {}
-        self.primary_resolution = resolutions[0] if resolutions else "1"
+        # Store all resolutions the strategy might need for calculations.
+        self.resolutions = resolutions if resolutions is not None else ["1"]
+        # The primary_resolution passed by the scheduler is the single source of truth.
+        # If it's not provided, we default to the first resolution in the list.
+        self.primary_resolution = primary_resolution or self.resolutions[0]
+        self.engine = None # This will be set by the live engine
         self.debug_log = []
 
-    def _log_debug(self, message: dict):
-        """Logs a structured debug message."""
-        self.debug_log.append(message)
+    def _log_debug(self, data: dict):
+        """
+        A wrapper for logging structured debug information from the strategy.
+        This method ensures that the log is formatted in the way the UI expects,
+        with a specific message and the data payload.
+        """
+        if self.engine: # Live trading
+            # The UI specifically looks for the message "Strategy Decision"
+            self.engine._log_debug("Strategy Decision", data)
+        else:
+            # In backtesting, we append to an in-memory list. The BT_Engine will handle it.
+            self.debug_log.append(data)
 
     def get_debug_log(self) -> list[dict]:
         """Returns the collected debug log."""

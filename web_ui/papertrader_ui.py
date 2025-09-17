@@ -1,64 +1,50 @@
 # web_ui/pages/papertrader_ui.py
 
+
 import streamlit as st
 import time
 import datetime
+import json
+import pandas as pd
+import os
 
 from src.live_config_manager import save_config, load_config, get_engine_status, start_engine, stop_engine
 from src.strategies import STRATEGY_MAPPING
 from src.market_calendar import is_market_working_day, NSE_MARKET_OPEN_TIME, NSE_MARKET_CLOSE_TIME
 import config
-from web_ui.utils import get_all_run_ids, load_live_portfolio_log, load_log_data, analyze_live_run, load_live_positions
+from web_ui.utils import get_all_run_ids, load_log_data, analyze_live_run, load_live_positions
 
 def render_page():
     """Renders the entire Live Paper Trading Monitor page."""
+
     # --- Sidebar Configuration ---
     st.sidebar.header("Live Trading Configuration")
     current_config, _ = load_config()
     if current_config is None: current_config = {}
 
-    with st.sidebar.form("live_config_form", clear_on_submit=False):
-        st.subheader("System Status & Config")
-        st.info(
-            """
-            **This is an automated research platform.**
-            - **Universe:** Top 10 Nifty50 stocks & 8 ATM index options.
-            - **Capital:** ₹100,000 per symbol/timeframe slot.
-            - **Timeframes:** 1m, 5m, 15m, 30m, 60m.
-            
-            *The only user-configurable settings are the Trading Mode and the Strategy.*
-            """
-        )
+    # --- Determine the actual timeframes being used by the engine ---
+    # This logic mirrors the trading_scheduler.py to ensure consistency.
+    active_timeframes = current_config.get('timeframes', ['1', '5', '15', '30', '60'])
+    timeframes_str = ', '.join([f"{tf}m" for tf in active_timeframes])
 
-        st.subheader("Trading Mode")
-        paper_trade_type = st.radio(
-            "Select Paper Trading Mode",
-            options=('Intraday', 'Positional'),
-            index=0 if current_config.get('paper_trade_type', 'Intraday') == 'Intraday' else 1,
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-        st.subheader("Select Strategy")
-        selected_strategy = st.selectbox(
-            "Select Strategy",
-            options=list(STRATEGY_MAPPING.keys()),
-            index=list(STRATEGY_MAPPING.keys()).index(current_config.get('strategy', config.DEFAULT_LIVE_STRATEGY)),
-            label_visibility="collapsed"
-        )
+    # --- Display System Status & Config (Read-Only) ---
+    st.sidebar.subheader("System Status & Config")
+    strategy_name = current_config.get('strategy', 'N/A')
+    trade_type = current_config.get('paper_trade_type', 'N/A')
+    trade_value = current_config.get('params', {}).get('trade_value', 'N/A')
 
-        submitted = st.form_submit_button("Save Live Configuration", width='stretch')
-        if submitted:
-            new_config = {
-                'paper_trade_type': paper_trade_type,
-                'strategy': selected_strategy,
-                # Explicitly set symbols to None to ensure any old, saved symbol list is purged.
-                'symbols': None,
-                # We no longer save symbols or params from the UI for live trading.
-                # They are determined automatically by the backend.
-            }
-            success, message = save_config(new_config)
-            if success: st.sidebar.success(message)
-            else: st.sidebar.error(message)
+    info_message = f"""
+    **This is an automated research platform.**
+    - **Strategy:** `{strategy_name}`
+    - **Mode:** `{trade_type}`
+    - **Timeframes:** `{timeframes_str}`
+    - **Capital/Slot:** `₹{trade_value:,.0f}`
+    - **Universe:** All Nifty50 stocks.
+    
+    *Configuration is read from `pt_config_stocks.yaml` and cannot be changed from the dashboard.*
+    """
+    st.sidebar.info(info_message)
+
 
     # --- Main Panel UI ---
     st.header("Live Paper Trading Monitor")
@@ -81,69 +67,38 @@ def render_page():
     st.session_state.is_engine_running = is_running
 
     col1, col2, col3 = st.columns(3)
-    if col1.button("Start Live Engine", disabled=st.session_state.is_engine_running, width='stretch'):
-        with st.spinner("Attempting to start..."):
-            success, message = start_engine()
-            time.sleep(2) # Give the engine time to create its PID file
-            # The script will rerun automatically after the widget interaction.
-    if col2.button("Stop Live Engine", disabled=not st.session_state.is_engine_running, width='stretch'):
-        with st.spinner("Sending stop signal..."):
-            stop_engine()
-            # The stop_engine function now waits for termination, so a long sleep here is not needed.
-            time.sleep(1)
-            # The script will rerun automatically.
-    if col3.button("Stop and Restart", disabled=not st.session_state.is_engine_running, width='stretch', type="primary"):
-        with st.spinner("Restarting engine..."):
-            stop_engine()
-            success, message = start_engine()
-            time.sleep(2) # Give the new engine time to start
+    with col1:
+        if st.button("Start Live Engine", disabled=st.session_state.is_engine_running, use_container_width=True):
+            with st.spinner("Attempting to start..."):
+                success, message = start_engine()
+                time.sleep(2) # Give the engine time to create its PID file
+                st.rerun()
+    with col2:
+        if st.button("Stop Live Engine", disabled=not st.session_state.is_engine_running, use_container_width=True):
+            with st.spinner("Sending stop signal..."):
+                stop_engine()
+                time.sleep(1)
+                st.rerun()
+    with col3:
+        if st.button("🔄 Refresh Data", use_container_width=True, type="primary"):
+            st.rerun()
 
     if is_running: st.success(f"**Status:** {status_message}")
     else: st.info(f"**Status:** {status_message}")
 
     st.markdown("---")
 
-    # --- Auto-refreshing Fragment ---
-    is_market_open_now = is_market_working_day(datetime.date.today()) and NSE_MARKET_OPEN_TIME <= datetime.datetime.now().time() <= NSE_MARKET_CLOSE_TIME
-    refresh_interval = st.sidebar.slider("UI Refresh Interval (s)", 5, 60, 10, key="live_refresh_interval", help="How often to refresh the live data below.")
-    should_refresh = is_market_open_now and st.session_state.is_engine_running
-
-    # --- More Stable Auto-Refresh using Meta Tag ---
-    if should_refresh:
-        st.html(f"<meta http-equiv='refresh' content='{refresh_interval}'>")
-
-    # --- Live Data Display ---
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.subheader("Live Open Positions")
-    
-    live_positions_container = st.empty()
-
-    # The `current_run_id` is now sourced directly from the engine status (PID file).
-    if st.session_state.is_engine_running and current_run_id:
-        positions_df = load_live_positions(current_run_id)
-
-        # Calculate and display Total MTM
-        if not positions_df.empty:
-            total_mtm = positions_df['mtm'].sum()
-            with col2:
-                st.metric("Total MTM", f"₹{total_mtm:,.2f}")
-            with live_positions_container:
-                st.dataframe(positions_df, use_container_width=True)
-        else:
-            with col2:
-                st.metric("Total MTM", "₹0.00")
-    else:
-        live_positions_container.info(
-            "The live engine is currently stopped. Click 'Start Live Engine' to begin."
-        )
-
     st.markdown("---")
     st.subheader("Live Session Logs")
-    live_runs = [r for r in get_all_run_ids() if r.startswith('live_')]
-    if live_runs:
-        selected_run_id = st.selectbox("Select a Live Session to Analyze:", options=live_runs, key="live_run_selector")
-        
+    
+    # --- DEFINITIVE FIX for Disappearing Logs ---
+    # The UI must be able to show the current session even if there are no historical logs.
+    # 1. Get all run IDs (historical and current).
+    all_run_ids = get_all_run_ids()
+    
+    # 2. If there are any runs (current or historical), render the log viewer.
+    if all_run_ids:
+        selected_run_id = st.selectbox("Select a Live Session to Analyze:", options=all_run_ids, key="live_run_selector")
         with st.spinner("Analyzing live session performance..."):
             live_metrics, trade_log_df = analyze_live_run(selected_run_id)
         
@@ -156,9 +111,53 @@ def render_page():
             col4.metric("Win Rate", f"{live_metrics['win_rate']:.2%}")
             col5.metric("Profit Factor", f"{live_metrics['profit_factor']:.2f}")
 
-            st.subheader("Trade Log")
-            # The Equity Curve tab has been removed as requested.
-            if trade_log_df is not None and not trade_log_df.empty:
-                st.dataframe(trade_log_df, use_container_width=True)
+            st.markdown("---")
+
+            # --- Tabbed Interface for Logs and Positions ---
+            tabs = st.tabs(["Open Positions", "Trade Log", "Strategy Debug Log"])
+
+            # --- Open Positions Tab ---
+            with tabs[0]:
+                positions_df = load_live_positions(selected_run_id)
+                if not positions_df.empty:
+                    # Only show MTM for the currently active session
+                    if selected_run_id == current_run_id:
+                        total_mtm = positions_df['mtm'].sum()
+                        st.metric("Total Mark-to-Market P&L", f"₹{total_mtm:,.2f}")
+                    st.dataframe(positions_df, use_container_width=True)
+                else:
+                    st.info("No open positions found for this session.")
+
+            # --- Trade Log Tab ---
+            with tabs[1]:
+                if trade_log_df is not None and not trade_log_df.empty:
+                    st.dataframe(trade_log_df, use_container_width=True)
+                else:
+                    st.info("No trades have been executed in this session yet.")
+
+            # --- Fetch and Parse All Logs Once ---
+            debug_log_query = "SELECT timestamp, log_data FROM pt_live_debug_log WHERE run_id = ? ORDER BY timestamp DESC;"
+            debug_log_df = load_log_data(debug_log_query, params=(selected_run_id,))
+            
+            if not debug_log_df.empty:
+                parsed_logs = [json.loads(row['log_data']) for index, row in debug_log_df.iterrows()]
+                # --- CORRECTED FILTERING LOGIC ---
+                # Strategy logs are specifically marked with the message "Strategy Decision".
+                strategy_decision_logs = [
+                    log for log in parsed_logs 
+                    if log.get('message') == "Strategy Decision" and 'data' in log and isinstance(log['data'], dict)
+                ]
             else:
-                st.info("No trades have been executed in this session yet.")
+                strategy_decision_logs = []
+
+            # --- Strategy Debug Log Tab ---
+            with tabs[2]:
+                if strategy_decision_logs:
+                    # The 'data' key contains the structured log from the strategy
+                    strategy_df = pd.DataFrame([log['data'] for log in strategy_decision_logs])
+                    max_logs = st.slider("Number of recent decision logs to display", min_value=50, max_value=min(5000, len(strategy_df)), value=200, step=50, key="live_strat_log_slider")
+                    st.dataframe(strategy_df.head(max_logs))
+                else:
+                    st.info("No strategy decision logs found for this session. The engine may be running but no strategy conditions have been met yet.")
+    else:
+        st.info("No active or historical trading sessions found. Start the engine to begin logging.")

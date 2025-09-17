@@ -5,12 +5,45 @@ from fyers_apiv3.FyersWebsocket import data_ws
 import json
 import os
 import datetime
+import numpy as np
 import pandas as pd
 from collections import defaultdict
 import sqlite3
 import config # config.py is now in the project root
 
+class NpEncoder(json.JSONEncoder):
+    """ Custom encoder for numpy data types """
+    def default(self, obj):
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NpEncoder, self).default(obj)
+
 class PT_Engine(data_ws.FyersDataSocket):
+    def _log_to_db(self, table_name: str, data: dict):
+        """A generic helper to log structured data to a database table."""
+        try:
+            with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
+                con.execute(
+                    f"INSERT INTO {table_name} (run_id, timestamp, log_data) VALUES (?, ?, ?)",
+                    (self.run_id, datetime.datetime.now().isoformat(), json.dumps(data, cls=NpEncoder))
+                )
+        except Exception as e:
+            print(f"[DBLogError] Failed to log to {table_name}: {e}")
+
+    def _log_debug(self, msg: str, data: dict = None):
+        """Logs a debug message to the database."""
+        self._log_to_db('pt_live_debug_log', {'message': msg, 'data': data or {}})
+
+    def _log_raw(self, msg: str, data: dict = None):
+        """Logs a raw message to the database."""
+        # For now, we can reuse the debug log table or create a new one. Let's reuse.
+        self._log_to_db('pt_live_debug_log', {'raw_message': msg, 'data': data or {}})
     """
     The main engine that orchestrates the live paper trading process.
     
@@ -45,6 +78,8 @@ class PT_Engine(data_ws.FyersDataSocket):
         for strategy in self.strategies:
             strategy.portfolio = self.portfolio
             strategy.order_manager = self.oms
+            # Pass a reference of the engine itself to the strategy for logging
+            strategy.engine = self
         # Create a quick lookup map from timeframe to strategy instance
         self.timeframe_to_strategy = {s.primary_resolution: s for s in self.strategies}
 
@@ -85,26 +120,27 @@ class PT_Engine(data_ws.FyersDataSocket):
         print("Live Paper Trading Engine initialized.")
 
     def on_message(self, message):
+
+        self._log_raw("on_message", data={'message_snippet': str(message)[:200]})
         """
         Callback function to process incoming WebSocket messages.
         Stores tick data and passes it to the strategy.
         """
         quotes_to_process = []
 
+        self._log_debug("Processing WebSocket message")
+
         # --- Robust Parsing Logic ---
-        # Case 1: The message is a dictionary containing a list of quotes under the 'd' key (e.g., 'OnQuotes').
         if isinstance(message, dict) and 'd' in message and isinstance(message['d'], list):
             for item in message['d']:
-                if 'v' in item: # The actual quote data is often nested inside a 'v' key
+                if 'v' in item:
                     quotes_to_process.append(item['v'])
-
-        # Case 2: The message is a simple list of quotes.
         elif isinstance(message, list):
             quotes_to_process.extend(message)
-
-        # Case 3: The message is a single quote dictionary (e.g., 'sf' type).
         elif isinstance(message, dict) and 'symbol' in message:
             quotes_to_process.append(message)
+
+        self._log_debug(f"Found {len(quotes_to_process)} quotes to process.")
 
         if quotes_to_process:
             # Process all collected quotes
@@ -117,6 +153,8 @@ class PT_Engine(data_ws.FyersDataSocket):
 
                 if symbol and ltp is not None and timestamp_epoch:
                     timestamp = datetime.datetime.fromtimestamp(timestamp_epoch)
+
+                    self._log_debug(f"Processing Tick", data={'symbol': symbol, 'ltp': ltp, 'ts': str(timestamp)})
 
                     # --- Daily State Reset ---
                     current_date = timestamp.date()
@@ -152,62 +190,23 @@ class PT_Engine(data_ws.FyersDataSocket):
                             # Commit is handled by the 'with' statement on exit.
                             # We can still print a message for feedback.
                             if self.tick_counter % 100 == 0:
-                                print(f"[{datetime.datetime.now()}] Processed 100 ticks.")
+                                msg = f"Processed 100 ticks. Last: symbol={symbol}, ltp={ltp}, ts={timestamp}"
+                                self._log_debug(msg)
                     except Exception as e:
-                        print(f"Error storing live tick for {symbol} ({timestamp}) into live_ticks: {e}")
+                        err = f"Error storing live tick for {symbol} ({timestamp}) into live_ticks: {e}"
+                        self._log_debug(err)
 
                     # --- Resample Tick to 1-Minute Bar and Execute Strategy ---
                     try:
                         self._resample_and_execute(timestamp, symbol, ltp)
                     except Exception as e:
-                        print(f"Error during strategy execution/resampling for {symbol}: {e}")
+                        err = f"Error during strategy execution/resampling for {symbol}: {e}"
+                        self._log_debug(err)
 
         else: # This 'else' correctly corresponds to the 'if quotes_to_process:'
-            print(f"[{datetime.datetime.now()}] Received non-quote message: {message}")
-
-    def _log_live_portfolio_value(self, timestamp):
-        """Logs the current portfolio value to the database for live tracking."""
-        try:
-            summary = self.portfolio.get_performance_summary(self.last_known_prices)
-            with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
-                cursor = con.cursor()
-                # 1. Ensure the table exists with a minimal schema.
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS portfolio_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        run_id TEXT NOT NULL,
-                        timestamp DATETIME NOT NULL
-                    );
-                """)
-
-                # 2. Check for and add missing columns to handle schema evolution.
-                cursor.execute("PRAGMA table_info(portfolio_log)")
-                columns = [info[1] for info in cursor.fetchall()]
-                
-                if 'value' not in columns:
-                    cursor.execute("ALTER TABLE portfolio_log ADD COLUMN value REAL;")
-                if 'cash' not in columns:
-                    cursor.execute("ALTER TABLE portfolio_log ADD COLUMN cash REAL;")
-                if 'holdings' not in columns:
-                    cursor.execute("ALTER TABLE portfolio_log ADD COLUMN holdings REAL;")
-
-                # 3. Insert the data.
-                cursor.execute(
-                    """
-                    INSERT INTO portfolio_log (run_id, timestamp, value, cash, holdings)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.run_id,
-                        timestamp.isoformat(),
-                        summary['total_portfolio_value'],
-                        summary['final_cash'],
-                        summary['holdings_value']
-                    )
-                )
-                con.commit() # Explicitly commit the transaction
-        except Exception as e:
-            print(f"Error logging live portfolio value: {e}")
+            msg = f"Received non-quote message: {message}"
+            print(f"[{datetime.datetime.now()}] {msg}")
+            self._log_debug(msg)
 
     def _log_live_positions(self, timestamp):
         """Logs the current open positions to the database for live tracking."""
@@ -223,7 +222,7 @@ class PT_Engine(data_ws.FyersDataSocket):
                     mtm = (ltp - data['avg_price']) * data['quantity']
 
                     # Get the corresponding strategy to fetch SL/TP details
-                    strategy = self.timeframe_to_strategy.get(timeframe)
+                    strategy = self.timeframe_to_strategy.get(timeframe) # Correctly look up the strategy for the position's timeframe
                     trade_details = strategy.active_trades.get(symbol) if strategy else None
 
                     positions_to_log.append((
@@ -235,13 +234,52 @@ class PT_Engine(data_ws.FyersDataSocket):
                         trade_details.get('target3') if trade_details else None,
                     ))
                 
-                cursor.executemany(
-                    "INSERT OR REPLACE INTO live_positions (run_id, timestamp, symbol, timeframe, quantity, avg_price, ltp, mtm, stop_loss, target1, target2, target3) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    positions_to_log
-                )
+                # --- DEFINITIVE FIX for Duplicate Position Logging ---
+                # The `INSERT OR REPLACE` command does not work reliably with `WITHOUT ROWID` tables.
+                # The correct, modern approach is to use the `UPSERT` syntax, which is supported since SQLite 3.24.0.
+                # This will insert a new row, but if a row with the same primary key (run_id, symbol, timeframe)
+                # already exists, it will update that existing row instead of inserting a duplicate.
+                upsert_sql = """
+                    INSERT INTO live_positions (run_id, timestamp, symbol, timeframe, quantity, avg_price, ltp, mtm, stop_loss, target1, target2, target3)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id, symbol, timeframe) DO UPDATE SET
+                        timestamp=excluded.timestamp,
+                        quantity=excluded.quantity,
+                        avg_price=excluded.avg_price,
+                        ltp=excluded.ltp,
+                        mtm=excluded.mtm,
+                        stop_loss=excluded.stop_loss,
+                        target1=excluded.target1,
+                        target2=excluded.target2,
+                        target3=excluded.target3;
+                """
+                cursor.executemany(upsert_sql, positions_to_log)
                 con.commit()
         except Exception as e:
             print(f"Error logging live positions: {e}")
+
+    def _log_portfolio_value(self, timestamp):
+        """Logs the portfolio's current value to the database for the equity curve."""
+        if not self.portfolio.enable_logging:
+            return
+        try:
+            summary = self.portfolio.get_performance_summary(self.last_known_prices)
+            log_entry = (
+                self.run_id,
+                timestamp.isoformat(),
+                summary['total_portfolio_value'],
+                summary['final_cash'],
+                summary['holdings_value'],
+                summary['total_pnl']
+            )
+            with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
+                con.execute(
+                    "INSERT INTO pt_portfolio_log (run_id, timestamp, value, cash, holdings, pnl) VALUES (?, ?, ?, ?, ?, ?)",
+                    log_entry
+                )
+                con.commit()
+        except Exception as e:
+            print(f"[DBLogError] Failed to log portfolio value: {e}")
 
     def _resample_and_execute(self, current_tick_timestamp: datetime.datetime, symbol: str, price: float):
         """
@@ -290,10 +328,12 @@ class PT_Engine(data_ws.FyersDataSocket):
         """
         Takes a completed 1-minute bar and resamples it into higher timeframes.
         """
-        resolutions_to_process = ['5', '15', '30', '60']
+        # Only attempt to resample to timeframes that are actually configured for this run.
+        configured_higher_timeframes = [tf for tf in self.timeframe_to_strategy.keys() if tf.isdigit() and int(tf) > 1]
+
         bar_timestamp = completed_1m_bar['timestamp']
 
-        for res_str in resolutions_to_process:
+        for res_str in configured_higher_timeframes:
             resolution = int(res_str)
             
             # Check if the 1-minute bar completes a higher-timeframe bar
@@ -343,42 +383,40 @@ class PT_Engine(data_ws.FyersDataSocket):
         self.bar_history[history_key].append(completed_bar)
 
         # --- Trigger Higher Timeframe Resampling (only from 1-min bars) ---
+        # --- ARCHITECTURAL FIX: Strategy execution is now ONLY triggered by this block ---
+        # If a bar of a configured timeframe is completed, find the corresponding strategy.
+        strategy_to_run = self.timeframe_to_strategy.get(resolution) # e.g., get '15' or '30'
+        if strategy_to_run:
+            # Keep history to a reasonable length
+            max_lookback = max(strategy_to_run.params.get('long_window', 0), strategy_to_run.params.get('ema_slow', 0), 21)
+            max_history_len = max_lookback + 150 # Increased buffer
+            if len(self.bar_history[history_key]) > max_history_len:
+                self.bar_history[history_key].pop(0)
+
+            # --- Prepare Multi-Timeframe Data Packet ---
+            market_data_for_strategy = defaultdict(dict)
+            for res in strategy_to_run.get_required_resolutions():
+                history_key_for_res = (symbol, res)
+                if history_key_for_res in self.bar_history:
+                    if res != 'D':
+                        market_data_for_strategy[res][symbol] = self.bar_history[history_key_for_res]
+                    else:
+                        market_data_for_strategy[res][symbol] = self.bar_history[history_key_for_res][-1]
+            
+            try:
+                strategy_to_run.on_data(
+                    completed_bar['timestamp'], 
+                    market_data_for_strategy, 
+                    is_live_trading=True, 
+                    live_crossover_count=self.live_crossover_counts.get(symbol, 0)
+                )
+            except Exception as e:
+                print(f"Error executing strategy {type(strategy_to_run).__name__} on {resolution}m bar for {symbol}: {e}")
+
+        # --- Higher-Timeframe Resampling ---
+        # If the completed bar was a 1-minute bar, use it to build the next level up.
         if resolution == '1':
             self._resample_higher_timeframes(completed_bar, symbol)
-
-        # --- Find and Execute the Correct Strategy Instance ---
-        for strategy in self.strategies:
-            if strategy.primary_resolution == resolution:
-                # Keep history to a reasonable length
-                max_lookback = max(strategy.params.get('long_window', 0), strategy.params.get('ema_slow', 0), 21)
-                max_history_len = max_lookback + 150 # Increased buffer
-                if len(self.bar_history[history_key]) > max_history_len:
-                    self.bar_history[history_key].pop(0)
-
-                # --- Prepare Multi-Timeframe Data Packet ---
-                market_data_for_strategy = defaultdict(dict)
-                
-                # The strategy needs data for ALL its required resolutions.
-                for res in strategy.get_required_resolutions():
-                    history_key_for_res = (symbol, res)
-                    if history_key_for_res in self.bar_history:
-                        if res == 'D':
-                            # For daily data, provide the single latest bar as a list containing the dict.
-                            # This ensures that when the strategy creates a DataFrame, the columns are preserved.
-                            market_data_for_strategy[res][symbol] = [self.bar_history[history_key_for_res][-1]]
-                        else:
-                            # For intraday data, provide the full history
-                            market_data_for_strategy[res][symbol] = self.bar_history[history_key_for_res]
-                
-                try:
-                    strategy.on_data(
-                        completed_bar['timestamp'], 
-                        market_data_for_strategy, 
-                        is_live_trading=True, 
-                        live_crossover_count=self.live_crossover_counts.get(symbol, 0)
-                    )
-                except Exception as e:
-                    print(f"Error executing strategy {type(strategy).__name__} on {resolution}m bar for {symbol}: {e}")
 
         # Reset crossover count only after the 1-minute bar is processed
         if resolution == '1' and symbol in self.live_crossover_counts:
@@ -386,8 +424,8 @@ class PT_Engine(data_ws.FyersDataSocket):
 
         # --- Log Portfolio and Positions (only on the 1-minute interval to avoid excessive logging) ---
         if resolution == '1':
-            self._log_live_portfolio_value(completed_bar['timestamp'])
             self._log_live_positions(completed_bar['timestamp'])
+            self._log_portfolio_value(completed_bar['timestamp']) # Add this call to persist equity curve
 
             # --- Rule: Intraday Forced Exits (checked on every 1-min bar) ---
             if self.paper_trade_type == 'Intraday' and completed_bar['timestamp'].time() >= self.intraday_exit_time:
@@ -467,13 +505,16 @@ class PT_Engine(data_ws.FyersDataSocket):
             self._process_completed_bar(bar, '1', s)
         self.incomplete_bars.clear()
 
-        if self.portfolio.positions:
-            print("Squaring off all open positions...")
-            for (symbol, timeframe), position_data in list(self.portfolio.positions.items()):
-                if position_data['quantity'] > 0:
-                    last_price = self.last_known_prices.get(symbol, position_data['avg_price'])
-                    print(f"  - Closing {position_data['quantity']} of {symbol} ({timeframe}) at last known price {last_price:.2f}")
-                    self.oms.execute_order({'symbol': symbol, 'timeframe': timeframe, 'action': 'SELL', 'quantity': position_data['quantity'], 'price': last_price, 'timestamp': shutdown_timestamp}, is_live_trading=False)
+        # --- DEFINITIVE FIX for Positional Trading ---
+        # Only square off positions if the mode is Intraday.
+        if self.paper_trade_type == 'Intraday':
+            if self.portfolio.positions:
+                print("Squaring off all open positions for Intraday session...")
+                for (symbol, timeframe), position_data in list(self.portfolio.positions.items()):
+                    if position_data['quantity'] > 0:
+                        last_price = self.last_known_prices.get(symbol, position_data['avg_price'])
+                        print(f"  - Closing {position_data['quantity']} of {symbol} ({timeframe}) at last known price {last_price:.2f}")
+                        self.oms.execute_order({'symbol': symbol, 'timeframe': timeframe, 'action': 'SELL', 'quantity': position_data['quantity'], 'price': last_price, 'timestamp': shutdown_timestamp}, is_live_trading=False)
 
         if self.is_connected():
             self.unsubscribe(symbols=self.symbols_to_subscribe)

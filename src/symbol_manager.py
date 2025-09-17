@@ -66,6 +66,7 @@ class SymbolManager:
                 df['underlying_id'] = numeric_underlying.round().astype('Int64').astype(str).replace('<NA>', '')
 
                 self._lot_sizes = df.set_index('symbol_ticker')['lot_size'].to_dict()
+                self._all_symbols_df = df # Store the full DataFrame
                 self._option_to_underlying = {}
                 
                 print(f"SymbolManager loaded {len(self._lot_sizes)} symbols. (Option trading disabled)")
@@ -77,6 +78,7 @@ class SymbolManager:
         self._initialized = False
         # Initialize with empty dicts to prevent downstream errors
         self._lot_sizes = {}
+        self._all_symbols_df = pd.DataFrame()
         self._option_to_underlying = {}
 
 
@@ -99,3 +101,30 @@ class SymbolManager:
             print("CRITICAL WARNING: get_lot_size called on an uninitialized SymbolManager!")
             return 1 # Return a safe default
         return self._lot_sizes.get(symbol, 1)
+
+    def get_all_symbols(self, include_indices: bool = True, include_options: bool = False) -> list[str]:
+        """
+        Returns a sorted list of all available symbol tickers based on the loaded master data.
+
+        Args:
+            include_indices (bool): Whether to include index symbols (e.g., 'NSE:NIFTY50-INDEX').
+            include_options (bool): Whether to include option symbols.
+
+        Returns:
+            list[str]: A sorted list of symbol tickers.
+        """
+        if not getattr(self, '_initialized', False) or self._all_symbols_df.empty:
+            print("CRITICAL WARNING: get_all_symbols called on an uninitialized or empty SymbolManager!")
+            return []
+
+        df = self._all_symbols_df.copy()
+
+        # Filter out indices if not requested
+        if not include_indices:
+            df = df[~df['symbol_ticker'].str.contains("-INDEX")]
+
+        # Filter out options if not requested
+        if not include_options:
+            df = df[df['instrument_type'] != 7] # Instrument type 7 is for options
+
+        return sorted(df['symbol_ticker'].unique().tolist())

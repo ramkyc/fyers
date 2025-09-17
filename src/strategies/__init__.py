@@ -8,14 +8,14 @@ from .bt_opening_price_crossover import OpeningPriceCrossoverStrategy as BT_Open
 
 # This mapping is used by the LIVE TRADING engine.
 STRATEGY_MAPPING = {
-    "Simple MA Crossover": SMACrossoverStrategy,
-    "Opening Price Crossover": OpeningPriceCrossoverStrategy,
+    "simple_ma_crossover": SMACrossoverStrategy,
+    "opening_price_crossover": OpeningPriceCrossoverStrategy,
 }
 
 # This separate mapping is used by the BACKTESTING UI.
 # This allows us to test changes to a strategy in backtesting without
 # affecting the live trading version.
 STRATEGY_MAPPING_BT = {
-    "Simple MA Crossover": SMACrossoverStrategy,
-    "Opening Price Crossover": BT_OpeningPriceCrossoverStrategy,
+    "simple_ma_crossover": SMACrossoverStrategy,
+    "opening_price_crossover": BT_OpeningPriceCrossoverStrategy,
 }

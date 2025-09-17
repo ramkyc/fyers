@@ -17,14 +17,13 @@ class BT_Engine:
     """
     The core engine for running backtests on historical data.
     """
-    def __init__(self, start_datetime: datetime.datetime, end_datetime: datetime.datetime, db_file: str, resolutions: list[str] = None):
+    def __init__(self, start_datetime: datetime.datetime, end_datetime: datetime.datetime, resolutions: list[str] = None):
         """_
         Initializes the BT_Engine.
 
         Args:
             start_datetime (datetime.datetime): The start datetime for the backtest.
             end_datetime (datetime.datetime): The end datetime for the backtest.
-            db_file (str): The path to the SQLite database file.
             resolutions (list[str]): The data resolutions to use for the backtest (e.g., ["D", "60", "15"]).
         """
         self.start_datetime = start_datetime
@@ -36,7 +35,7 @@ class BT_Engine:
         self.bar_history = defaultdict(lambda: defaultdict(list)) # To maintain rolling history for strategies
         self.warmup_period = 100 # Number of bars to pre-load for indicators
         # Connect in read-only mode to prevent locking issues with other processes (like data fetchers).
-        db_uri = f'file:{self.db_file}?mode=ro'
+        db_uri = f'file:{config.HISTORICAL_MARKET_DB_FILE}?mode=ro'
         self.con = sqlite3.connect(db_uri, uri=True)
         print("Backtesting Engine initialized.")
 
@@ -282,21 +281,27 @@ class BT_Engine:
         # Get the last known prices for the final P&L calculation
         last_prices = primary_resolution_data.groupby('symbol')['close'].last().to_dict()
         analyzer = PerformanceAnalyzer(portfolio)
-        analyzer.print_performance_report(last_prices, run_id) # This prints to console
+        analyzer.print_performance_report(last_prices, run_id)
         print("-" * 70)
         print(f"Backtest for {strategy_class.__name__} complete.")
         print("-" * 70 + "\n")
-        # DEBUG: Print equity curve for inspection
-        print("\n[DEBUG] Equity curve sample:")
-        for entry in portfolio.equity_curve[:5]:
-            print(entry)
-        print(f"[DEBUG] Total equity curve points: {len(portfolio.equity_curve)}")
-        # Check for missing 'pnl' keys
-        missing_pnl = [i for i, entry in enumerate(portfolio.equity_curve) if 'pnl' not in entry]
-        if missing_pnl:
-            print(f"[DEBUG] WARNING: {len(missing_pnl)} entries missing 'pnl' key. First few: {missing_pnl[:5]}")
-        else:
-            print("[DEBUG] All entries have 'pnl' key.")
+
+        # --- Final Persistence of Backtest Equity Curve ---
+        try:
+            with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
+                equity_curve_data = [
+                    (run_id, entry['timestamp'].isoformat(), entry['value'], entry['cash'], entry['holdings'], entry['pnl'])
+                    for entry in portfolio.equity_curve
+                ]
+                if equity_curve_data:
+                    con.executemany(
+                        "INSERT INTO bt_portfolio_log (run_id, timestamp, value, cash, holdings, pnl) VALUES (?, ?, ?, ?, ?, ?)",
+                        equity_curve_data
+                    )
+                    con.commit()
+        except Exception as e:
+            print(f"Warning: Could not save backtest equity curve to database. Error: {e}")
+
         return portfolio, last_prices, run_id, strategy.get_debug_log() # Return the debug log as well
 
     def __del__(self):

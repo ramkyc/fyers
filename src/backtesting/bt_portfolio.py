@@ -1,6 +1,7 @@
 # src/backtesting/bt_portfolio.py
 
 import datetime
+import numpy as np
 import config
 
 class BT_Portfolio:
@@ -29,9 +30,7 @@ class BT_Portfolio:
         """
         Logs the portfolio's value to the in-memory equity curve.
         """
-        print(f"[DEBUG] log_portfolio_value called at {timestamp} with current_prices: {current_prices}")
         summary = self.get_performance_summary(current_prices)
-        print(f"[DEBUG] Performance summary: {summary}")
         entry = {
             'timestamp': timestamp,
             'value': summary['total_portfolio_value'],
@@ -39,7 +38,9 @@ class BT_Portfolio:
             'holdings': summary['holdings_value'],
             'pnl': summary['total_pnl']
         }
-        print(f"[DEBUG] Appending to equity_curve: {entry}")
+        # Format the entry for cleaner debug printing, converting numpy types to standard floats
+        debug_entry = {k: (f"{v:.2f}" if isinstance(v, (float, np.floating)) else v) for k, v in entry.items()}
+        print(f"[DEBUG] Appending to equity_curve: {debug_entry}")
         self.equity_curve.append(entry)
 
     def execute_order(self, symbol: str, timeframe: str, action: str, quantity: int, price: float, timestamp: datetime):
@@ -62,9 +63,12 @@ class BT_Portfolio:
         """
         position_key = (symbol, timeframe)
 
-        # On a sell, calculate realized P&L and add it back to the position's capital
+        # --- FIX: Correctly calculate realized P&L on sell trades ---
+        # On a sell, calculate the realized P&L for the closed portion of the trade
+        # and add it back to the compounding capital for that specific trading slot.
+        # This ensures the PerformanceAnalyzer can correctly identify winning/losing trades.
         if quantity < 0: # This is a sell trade
-            realized_pnl = (price - self.positions[position_key]['avg_price']) * abs(quantity)
+            realized_pnl = (price - self.positions.get(position_key, {}).get('avg_price', price)) * abs(quantity)
             self.position_capital[position_key] += realized_pnl
 
         self.current_cash -= (quantity * price)

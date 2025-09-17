@@ -80,7 +80,7 @@ def setup_databases():
                 );
             """)
             # Add migration for fy_token if it doesn't exist
-            add_column_if_not_exists(cursor, 'symbol_master', 'fy_token', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'symbol_master', 'fy_token', 'TEXT')
             print("  - Table 'symbol_master' is ready.")
     except Exception as e:
         print(f"ERROR setting up historical market database: {e}")
@@ -127,28 +127,40 @@ def setup_databases():
             print(f"Connected to trading log database: {config.TRADING_DB_FILE}")
             cursor = con.cursor()
 
-            # Step 1: Create tables if they don't exist (without run_id initially for compatibility)
+            # --- Trade Log Table Refactoring ---
+            # Rename the old 'paper_trades' table to 'live_paper_trades' if it exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_trades'")
+            if cursor.fetchone():
+                try:
+                    cursor.execute("ALTER TABLE paper_trades RENAME TO live_paper_trades")
+                    print("  - Renamed 'paper_trades' to 'live_paper_trades'.")
+                except sqlite3.OperationalError:
+                    # This can happen if the table is somehow in use. We'll proceed assuming it's okay.
+                    pass
+
+            # Create the new, separated trade log tables
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS paper_trades (
-                    timestamp TIMESTAMP, symbol TEXT, action TEXT, quantity INTEGER, price REAL, is_live BOOLEAN, timeframe TEXT
+                CREATE TABLE IF NOT EXISTS live_paper_trades (
+                    run_id TEXT, timestamp TIMESTAMP, symbol TEXT, timeframe TEXT, action TEXT, quantity INTEGER, price REAL
                 );
             """)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_log (
-                    timestamp TIMESTAMP, total_portfolio_value REAL, cash REAL, holdings_value REAL, realized_pnl REAL, unrealized_pnl REAL
+                CREATE TABLE IF NOT EXISTS backtest_trades (
+                    run_id TEXT, timestamp TIMESTAMP, symbol TEXT, timeframe TEXT, action TEXT, quantity INTEGER, price REAL
                 );
             """)
 
-            # Step 2: Run migration to add the 'run_id' column if it's missing
-            add_column_if_not_exists(con, cursor, 'paper_trades', 'run_id', 'TEXT')
-            add_column_if_not_exists(con, cursor, 'paper_trades', 'timeframe', 'TEXT')
-            add_column_if_not_exists(con, cursor, 'portfolio_log', 'run_id', 'TEXT')
+            # Run migrations on the new tables to ensure they have the correct columns
+            add_column_if_not_exists(con, cursor, 'live_paper_trades', 'run_id', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'live_paper_trades', 'timeframe', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'backtest_trades', 'run_id', 'TEXT')
+            add_column_if_not_exists(con, cursor, 'backtest_trades', 'timeframe', 'TEXT')
 
             # Step 3: Now that the column is guaranteed to exist, create the index
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_trades_run_id ON paper_trades(run_id);")
-            print("  - Table 'paper_trades' is ready.")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_log_run_id ON portfolio_log(run_id);")
-            print("  - Table 'portfolio_log' is ready.")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_live_paper_trades_run_id ON live_paper_trades(run_id);")
+            print("  - Table 'live_paper_trades' is ready.")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_id ON backtest_trades(run_id);")
+            print("  - Table 'backtest_trades' is ready.")
 
             # Table for live position tracking
             cursor.execute("""
@@ -157,19 +169,45 @@ def setup_databases():
                     timestamp TIMESTAMP,
                     symbol TEXT,
                     timeframe TEXT,
-                    quantity INTEGER,
-                    avg_price REAL,
-                    ltp REAL,
-                    mtm REAL,
+                    quantity INTEGER, avg_price REAL, ltp REAL, mtm REAL,
+                    stop_loss REAL,
+                    target1 REAL,
+                    target2 REAL,
+                    target3 REAL,
                     PRIMARY KEY (run_id, symbol, timeframe)
                 ) WITHOUT ROWID;
             """)
-            add_column_if_not_exists(con, cursor, 'live_positions', 'stop_loss', 'REAL')
-            add_column_if_not_exists(con, cursor, 'live_positions', 'target1', 'REAL')
-            add_column_if_not_exists(con, cursor, 'live_positions', 'target2', 'REAL')
-            add_column_if_not_exists(con, cursor, 'live_positions', 'target3', 'REAL')
             print("  - Table 'live_positions' is ready.")
 
+            # Table for structured live debug logs
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pt_live_debug_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT,
+                    timestamp TIMESTAMP,
+                    log_data TEXT
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pt_live_debug_log_run_id ON pt_live_debug_log(run_id);")
+            print("  - Table 'pt_live_debug_log' is ready.")
+
+            # New separated tables for storing detailed equity curve data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pt_portfolio_log (
+                    run_id TEXT, timestamp TIMESTAMP, value REAL, cash REAL, holdings REAL, pnl REAL
+                );
+            """)
+            print("  - Table 'pt_portfolio_log' is ready.")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bt_portfolio_log (
+                    run_id TEXT,
+                    timestamp TIMESTAMP,
+                    value REAL,
+                    cash REAL,
+                    holdings REAL,
+                    pnl REAL
+                );
+            """)
+            print("  - Table 'bt_portfolio_log' is ready.")
             con.commit()
 
     except Exception as e:

@@ -17,7 +17,7 @@ class SMACrossoverStrategy(BaseStrategy):
     - Buys when the short-term SMA crosses above the long-term SMA.
     - Sells (to close a position) when the short-term SMA crosses below the long-term SMA.
     """
-    def __init__(self, symbols: list[str], portfolio: 'PT_Portfolio' = None, order_manager: 'PT_OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None):
+    def __init__(self, symbols: list[str], portfolio: 'PT_Portfolio' = None, order_manager: 'PT_OrderManager' = None, params: dict[str, object] = None, resolutions: list[str] = None, primary_resolution: str = None):
         """
         Initializes the SMACrossoverStrategy.
 
@@ -30,7 +30,7 @@ class SMACrossoverStrategy(BaseStrategy):
                          - 'long_window' (int)
                          - 'trade_quantity' (int)
         """
-        super().__init__(symbols=symbols, portfolio=portfolio, order_manager=order_manager, params=params, resolutions=resolutions)
+        super().__init__(symbols=symbols, portfolio=portfolio, order_manager=order_manager, params=params, resolutions=resolutions, primary_resolution=primary_resolution)
         self.order_manager: PT_OrderManager = order_manager
         def safe_int(val, default):
             try:
@@ -40,9 +40,6 @@ class SMACrossoverStrategy(BaseStrategy):
         self.short_window: int = safe_int(self.params.get('short_window', 5), 5)
         self.long_window: int = safe_int(self.params.get('long_window', 20), 20)
         self.trade_value: float = float(self.params.get('trade_value', 25000.0))
-        # For live trading, the engine provides 1-minute bars. For backtesting, it uses the provided resolutions.
-        # If resolutions is None, it implies a live trading context.
-        self.primary_resolution = resolutions[0] if resolutions else "1"
 
     @staticmethod
     def get_optimizable_params() -> list[dict]:
@@ -87,17 +84,22 @@ class SMACrossoverStrategy(BaseStrategy):
                 continue # Not enough data to calculate the long-term SMA
 
             df = pd.DataFrame(bar_history_list)
-            # The engine provides timestamps as integers (seconds). We must specify the unit.
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-            df = df.set_index('timestamp')
+            # The backtest engine provides timestamps as integers (seconds), while the live
+            # engine provides datetime objects. We need to handle both cases.
+            if pd.api.types.is_integer_dtype(df['timestamp']):
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            else: # It's already a datetime object from the live engine
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
 
+            df = df.set_index('timestamp')
+            
             ltp = df['close'].iloc[-1]
 
             # --- Indicator Calculations using pandas-ta for efficiency ---
             df.ta.sma(length=self.short_window, append=True)
             df.ta.sma(length=self.long_window, append=True)
 
-            # Get latest and previous SMA values
+            # Get latest and previous SMA values from the DataFrame
             latest_indicators = df.iloc[-1]
             previous_indicators = df.iloc[-2]
 

@@ -10,7 +10,7 @@ import sqlite3
 import config
 from src.strategies import STRATEGY_MAPPING
 from src.fetch_historical_data import fetch_and_store_historical_data, _build_fix_list
-from src.auth import get_fyers_model, get_access_token
+from src.market_calendar import is_market_working_day
 
 from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.paper_trading.pt_portfolio import PT_Portfolio
@@ -20,20 +20,26 @@ def run_backtest_for_worker(args):
     A self-contained function to run a single backtest.
     Designed to be executed in a separate process to enable parallelization.
     """
-    start_date_str, end_date_str, db_file, resolutions, symbols, params, initial_cash, strategy_name, backtest_type = args
+    start_date_str, end_date_str, primary_resolution, symbols, params, initial_cash, strategy_name, backtest_type = args
 
     # These imports are necessary inside the worker process
     from src.backtesting.bt_engine import BT_Engine
     from src.reporting.performance_analyzer import PerformanceAnalyzer
     strategy_class = STRATEGY_MAPPING[strategy_name]
+
+    # --- INTELLIGENT RESOLUTION FETCHING (for parallel workers) ---
+    # Instantiate the strategy to ask it what resolutions it needs,
+    # instead of hardcoding rules in the UI. This mirrors the single-backtest logic.
+    strategy_instance_for_resolutions = strategy_class(symbols=[], resolutions=[primary_resolution])
+    final_resolutions = strategy_instance_for_resolutions.get_required_resolutions()
+
     start_datetime = datetime.datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
     end_datetime = datetime.datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
 
     engine = BT_Engine(
         start_datetime=start_datetime,
         end_datetime=end_datetime,
-        db_file=db_file,
-        resolutions=resolutions
+        resolutions=final_resolutions
     )
     
     portfolio_result, last_prices, _ = run_and_capture_backtest(engine, strategy_class, symbols, params, initial_cash, backtest_type)
@@ -75,15 +81,15 @@ def _check_data_availability(symbols: list, resolutions: list, start_dt: datetim
                     min_ts = pd.to_datetime(df.iloc[0]['min_ts'])
                     max_ts = pd.to_datetime(df.iloc[0]['max_ts'])
 
-                    # Only check weekdays (Mon-Fri) in the backtest period
+                    # Check every market working day in the backtest period
                     current = start_dt
                     while current <= end_dt:
-                        if current.weekday() < 5:  # 0=Monday, ..., 4=Friday
+                        if is_market_working_day(current.date()):
                             if not (min_ts <= current <= max_ts):
                                 print(f"  - Data missing for {symbol} ({res}) on {current.date()}. Have [{min_ts} to {max_ts}]. Triggering download.")
                                 return False
                         current += datetime.timedelta(days=1)
-            print("--- All required data is available for weekdays. Skipping download. ---")
+            print("--- All required data is available for market working days. Skipping download. ---")
             return True # All checks passed
 
     except Exception as e:
@@ -166,35 +172,22 @@ def load_log_data(query, params=()):
         st.info(f"Could not load log data. The database table may not exist yet. ({e})")
         return pd.DataFrame()
 
-@st.cache_data(ttl=600) # Cache for 10 minutes
+@st.cache_data(ttl=3600) # Cache for 1 hour
 def get_all_symbols():
-    """Fetches all unique symbols from the historical data table."""
-    # --- PERFORMANCE OPTIMIZATION ---
-    # Querying the database, even the symbol_master, introduces a slight delay.
-    # Since the universe is static (Nifty50 + 4 indices), we hardcode the list
-    # for instantaneous loading in the UI.
-    # This list is derived from the data_coverage.txt file.
-    return sorted([
-        "BSE:BANKEX-INDEX", "BSE:SENSEX-INDEX", "NSE:ADANIENT-EQ", 
-        "NSE:ADANIPORTS-EQ", "NSE:APOLLOHOSP-EQ", "NSE:ASIANPAINT-EQ", 
-        "NSE:AXISBANK-EQ", "NSE:BAJAJ-AUTO-EQ", "NSE:BAJAJFINSV-EQ", 
-        "NSE:BAJFINANCE-EQ", "NSE:BEL-EQ", "NSE:BHARTIARTL-EQ", 
-        "NSE:BPCL-EQ", "NSE:BRITANNIA-EQ", "NSE:CIPLA-EQ", 
-        "NSE:COALINDIA-EQ", "NSE:DIVISLAB-EQ", "NSE:DRREDDY-EQ", 
-        "NSE:EICHERMOT-EQ", "NSE:ETERNAL-EQ", "NSE:GRASIM-EQ", 
-        "NSE:HCLTECH-EQ", "NSE:HDFCBANK-EQ", "NSE:HDFCLIFE-EQ", 
-        "NSE:HEROMOTOCO-EQ", "NSE:HINDALCO-EQ", "NSE:HINDUNILVR-EQ", 
-        "NSE:ICICIBANK-EQ", "NSE:INDUSINDBK-EQ", "NSE:INFY-EQ", 
-        "NSE:ITC-EQ", "NSE:JIOFIN-EQ", "NSE:JSWSTEEL-EQ", 
-        "NSE:KOTAKBANK-EQ", "NSE:LT-EQ", "NSE:LTIM-EQ", "NSE:M&M-EQ", 
-        "NSE:MARUTI-EQ", "NSE:NESTLEIND-EQ", "NSE:NIFTY50-INDEX", 
-        "NSE:NIFTYBANK-INDEX", "NSE:NTPC-EQ", "NSE:ONGC-EQ", 
-        "NSE:POWERGRID-EQ", "NSE:RELIANCE-EQ", "NSE:SBILIFE-EQ", 
-        "NSE:SBIN-EQ", "NSE:SHRIRAMFIN-EQ", "NSE:SUNPHARMA-EQ", 
-        "NSE:TATACONSUM-EQ", "NSE:TATAMOTORS-EQ", "NSE:TATASTEEL-EQ", 
-        "NSE:TCS-EQ", "NSE:TECHM-EQ", "NSE:TITAN-EQ", "NSE:TRENT-EQ", 
-        "NSE:ULTRACEMCO-EQ", "NSE:WIPRO-EQ"
-    ])
+    """
+    Fetches all unique symbols from the SymbolManager.
+    Uses Streamlit's caching to ensure this is only run once per session.
+    """
+    # This function will now be the single source of truth for the symbol list in the UI.
+    # The @st.cache_data decorator ensures that SymbolManager() is only initialized
+    # once, and the result is stored for the duration of the TTL.
+    from src.symbol_manager import SymbolManager # Local import
+    
+    # The SymbolManager is a singleton; this call will either create it
+    # or return the existing instance. The caching wrapper prevents even this
+    # from being called more than once.
+    sm = SymbolManager()
+    return sm.get_all_symbols(include_indices=True, include_options=False)
 
 @st.cache_data(ttl=10) # Cache for 10 seconds for better responsiveness
 def get_all_run_ids():
@@ -211,24 +204,20 @@ def get_all_run_ids():
     if not os.path.exists(config.TRADING_DB_FILE):
         return [active_run_id] if active_run_id else []
 
-    query = "SELECT DISTINCT run_id FROM paper_trades WHERE run_id IS NOT NULL ORDER BY timestamp DESC;"
-    df = load_log_data(query)
-    live_runs = [r for r in df['run_id'].tolist() if r.startswith('live_')]
-    backtest_runs = [r for r in df['run_id'].tolist() if not r.startswith('live_')]
+    # Query both tables to get all possible run IDs
+    query_live = "SELECT DISTINCT run_id FROM live_paper_trades WHERE run_id IS NOT NULL ORDER BY timestamp DESC;"
+    query_bt = "SELECT DISTINCT run_id FROM backtest_trades WHERE run_id IS NOT NULL ORDER BY timestamp DESC;"
+    
+    df_live = load_log_data(query_live)
+    df_bt = load_log_data(query_bt)
+    
+    live_runs = df_live['run_id'].tolist() if not df_live.empty else []
+    backtest_runs = df_bt['run_id'].tolist() if not df_bt.empty else []
     
     # 3. Combine them, ensuring the active run is at the top and there are no duplicates
     all_runs = ([active_run_id] if active_run_id else []) + live_runs + backtest_runs
     # Use a dictionary to preserve order while removing duplicates
     return list(dict.fromkeys(all_runs))
-
-@st.cache_data(ttl=10) # Cache for 10 seconds
-def load_live_portfolio_log(run_id: str):
-    """Loads the portfolio log for a specific live run ID."""
-    if not run_id:
-        return pd.DataFrame()
-    query = "SELECT timestamp, value FROM portfolio_log WHERE run_id = ? ORDER BY timestamp ASC;"
-    df = load_log_data(query, params=(run_id,))
-    return df
 
 @st.cache_data(ttl=60) # Cache for 1 minute
 def get_live_tradeable_symbols():
@@ -297,30 +286,32 @@ def analyze_live_run(run_id: str):
     if not run_id:
         return None, None
 
-    # 1. Load the trade log for the selected run
-    trade_log_query = "SELECT * FROM paper_trades WHERE run_id = ? ORDER BY timestamp ASC;"
-    trade_log_df = load_log_data(trade_log_query, params=(run_id,))
-    if trade_log_df.empty:
-        return None, None # No trades, no performance to analyze
+    # 1. Determine which tables to query based on the run_id prefix
+    if run_id.startswith('live_'):
+        trade_log_query = "SELECT * FROM live_paper_trades WHERE run_id = ? ORDER BY timestamp ASC;"
+        equity_curve_query = "SELECT * FROM pt_portfolio_log WHERE run_id = ? ORDER BY timestamp ASC;"
+    else:
+        trade_log_query = "SELECT * FROM backtest_trades WHERE run_id = ? ORDER BY timestamp ASC;"
+        equity_curve_query = "SELECT * FROM bt_portfolio_log WHERE run_id = ? ORDER BY timestamp ASC;"
 
-    # 2. Load the equity curve for the selected run
-    portfolio_log_df = load_live_portfolio_log(run_id)
-    if portfolio_log_df.empty:
+    # 2. Load the trade log and portfolio log
+    trade_log_df = load_log_data(trade_log_query, params=(run_id,))
+    portfolio_log_df = load_log_data(equity_curve_query, params=(run_id,))
+
+    if trade_log_df.empty and portfolio_log_df.empty:
         return None, None # No equity curve, can't calculate drawdown/sharpe
 
-    # --- CRITICAL FIX ---
-    # The initial cash for a live run is a known, fixed value set in the trading_scheduler.
-    # Using this fixed value is more reliable than trying to infer it from the first log entry.
-    initial_cash_for_live_run = 10000000.0 # This must match the value in trading_scheduler.py
+    # 3. Determine initial cash
+    initial_cash = 10000000.0 if run_id.startswith('live_') else (portfolio_log_df['cash'].iloc[0] + portfolio_log_df['holdings'].iloc[0] if not portfolio_log_df.empty else 5000000.0)
 
-    # 3. Create a mock portfolio object to hold the data for the analyzer
-    mock_portfolio = PT_Portfolio(initial_cash=initial_cash_for_live_run, enable_logging=False)
+    # 4. Create a mock portfolio object to hold the data for the analyzer
+    mock_portfolio = PT_Portfolio(initial_cash=initial_cash, enable_logging=False)
     mock_portfolio.trades = trade_log_df.to_dict('records')
     mock_portfolio.equity_curve = portfolio_log_df.to_dict('records')
 
-    # 4. Determine last prices for unrealized P&L calculation
+    # 5. Determine last prices for unrealized P&L calculation
     last_prices = trade_log_df.groupby('symbol')['price'].last().to_dict()
 
-    # 5. Analyze and return metrics
+    # 6. Analyze and return metrics
     analyzer = PerformanceAnalyzer(mock_portfolio)
     return analyzer.calculate_metrics(last_prices), trade_log_df

@@ -1,4 +1,4 @@
-# src/strategies/opening_price_crossover.py
+# src/strategies/bt_opening_price_crossover.py
 
 import datetime
 import pandas as pd
@@ -53,11 +53,6 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.last_processed_day = {symbol: None for symbol in self.symbols}
         self.implied_crossover_history: 'defaultdict[str, deque[float]]' = defaultdict(deque)
         self.debug_log = []
-    def get_debug_log(self) -> list[str]:
-        return self.debug_log
-
-    def get_debug_log(self) -> list[str]:
-        return self.debug_log
 
     @staticmethod
     def get_optimizable_params() -> list[dict]:
@@ -87,7 +82,15 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 return f"{value:.2f}"
             return "nan"
 
-        # This now uses the structured logging system from the base strategy
+        # ANSI color codes for better readability in the console
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        YELLOW = '\033[93m'
+        RESET = '\033[0m'
+
+        def colorize(value, condition):
+            return f"{GREEN}{value}{RESET}" if condition else f"{RED}{value}{RESET}"
+
         self._log_debug({
             "timestamp": timestamp, "symbol": symbol, "ltp": data.get('ltp'),
             "ema_fast": data.get('ema_fast'), "ema_slow": data.get('ema_slow'), "ema_bullish": data.get('is_ema_bullish'),
@@ -130,7 +133,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             daily_open_price = 0
             # Correctly get the daily data for the specific symbol being analyzed
             daily_data_for_symbol = analysis_market_data.get("D", {}).get(analysis_symbol)
-            # Both live and backtest engines now provide daily data as a simple dictionary.
+            # The engine now provides daily data as a simple dictionary.
             if daily_data_for_symbol and isinstance(daily_data_for_symbol, dict):
                 daily_open_price = daily_data_for_symbol.get('open', 0)
 
@@ -138,8 +141,9 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             # Ensure we have enough data to calculate indicators
             if len(df) < self.ema_slow_period or daily_open_price == 0:
                 continue
-            
-            # --- Indicator Calculations & State Capture ---
+
+            # --- Indicator Calculations ---
+            # CORRECTED: All calculations are now done on the correct 'df' DataFrame.
             df.ta.ema(length=self.ema_fast_period, append=True)
             df.ta.ema(length=self.ema_slow_period, append=True)
             df.ta.atr(length=self.atr_period, append=True) # Calculate ATR
@@ -150,29 +154,14 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             
             ema_fast = latest_analysis[f'EMA_{self.ema_fast_period}']
             ema_slow = latest_analysis[f'EMA_{self.ema_slow_period}']
+            # Use a default ATR of 0 if the column doesn't exist (e.g., not enough data)
             atr_value = latest_analysis.get(f'ATRr_{self.atr_period}', 0)
 
-            # --- UNCONDITIONAL LOGGING SETUP ---
-            # Create the log dictionary at the start of every bar processing.
-            decision_log = {
-                'timestamp': timestamp.isoformat(), 'symbol': symbol, 'primary_resolution': self.primary_resolution,
-                'close': latest_analysis['close'], 'ema_fast': ema_fast, 'ema_slow': ema_slow,
-                'daily_open': daily_open_price, 'atr': atr_value, 'decision': 'No Action' # Default decision
-            }
+        # --- Position Management ---
+        active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
 
-            # --- Position Management ---
-            active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
-            
-            # 1. Check for Exits if a position is open
-            if active_trade and active_trade['quantity'] > 0:
-                trade_details = self.active_trades[symbol]
-                if not trade_details: continue # Should not happen if position is active
-                
-                # The _check_and_execute_exit method will now update the decision_log
-                self._check_and_execute_exit(symbol, latest_analysis, trade_details, active_trade, decision_log, timestamp, is_live)
-            
+        if not active_trade:
             # 2. Check for Entries if no position is open
-            else:
                 # --- Entry Conditions ---
                 is_ema_bullish = ema_fast > ema_slow
                 is_price_bullish = latest_analysis['close'] >= latest_analysis['open']
@@ -205,20 +194,17 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                 # --- V5: Crossover Count Filter ---
                 # This is the core filter based on the dual-logic described in the class docstring.
                 is_crossover_spike = crossover_count > average_implied_crossover_count
+                # --- TEMPORARY OVERRIDE: This filter is disabled as it depends on 1-min data which is no longer guaranteed.
+                is_crossover_spike = True
 
-                all_conditions_met = is_ema_bullish and is_price_bullish and sentiment_filter_passed and is_crossover_spike
-                
-                # Update decision log with entry check data
-                decision_log.update({
-                    'crossover_count': crossover_count, 'avg_crossover_count': average_implied_crossover_count,
-                    'is_ema_bullish': is_ema_bullish, 'is_price_bullish': is_price_bullish,
-                    'sentiment_filter_passed': sentiment_filter_passed, 'is_crossover_spike': is_crossover_spike,
-                    'all_conditions_met': all_conditions_met
-                })
+                # --- Always-on Debug Logging for Live Engine ---
+                all_conditions_met = is_ema_bullish and is_price_bullish and sentiment_filter_passed and is_crossover_spike               
 
                 # --- Final Entry Decision ---
                 if all_conditions_met:
-                    entry_price = latest_analysis['close']
+                    entry_price = pd.DataFrame(bar_history_list).iloc[-1]['close'] # Use the actual option's price for entry
+                    
+                    # New dynamic stop-loss calculation
                     volatility_stop = min(latest_analysis['low'], previous_analysis['low'])
                     atr_stop = entry_price - (atr_value * self.atr_multiplier) # Stop loss is based on underlying's volatility
                     stop_loss = min(volatility_stop, atr_stop)
@@ -248,24 +234,35 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
                                 't3_hit': False # Not strictly needed but good for consistency
                             }
 
-            # --- UNCONDITIONAL LOGGING ---
-            # Log the final decision for this bar, regardless of what happened.
-            self._log_debug(decision_log)
+        # --- Final Logging Step ---
+        # Use the engine's provided logger to persist the decision log.
+        if self.engine:
+            self.engine.log_decision(decision_log)
 
-    def _check_and_execute_exit(self, symbol: str, latest_analysis: pd.Series, trade_details: dict, active_trade: dict, decision_log: dict, timestamp: datetime.datetime, is_live: bool):
-        """Helper method to check and execute exits, updating the decision log."""
+    def _check_and_execute_exit(self, symbol: str, latest_analysis: pd.Series, decision_log: dict, timestamp: datetime.datetime, is_live: bool):
+        """
+        Checks if any of the profit targets or the stop-loss have been hit
+        for an active trade and executes partial or full exits.
+        This is now a separate helper method for clarity.
+        """
+        active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
+        trade_details = self.active_trades.get(symbol)
+
+        if not active_trade or not trade_details:
+            return
+
         # Check Target 3 first (highest target)
         if not trade_details.get('t3_hit', False) and latest_analysis['high'] >= trade_details['target3']:
             decision_log['decision'] = 'EXIT at T3 (Full)'
             self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['target3'], timestamp, is_live)
             self.active_trades[symbol] = None # Close trade
-            return
+            return # Exit after a full sale
 
         # Check Target 2
         if not trade_details.get('t2_hit', False) and latest_analysis['high'] >= trade_details['target2']:
             qty_to_sell_t2 = int(trade_details['initial_quantity'] * self.exit_percent_target2)
             if qty_to_sell_t2 > 0 and active_trade['quantity'] >= qty_to_sell_t2:
-                decision_log['decision'] = f"EXIT at T2 ({self.exit_percent_target2 * 100:.0f}%)"
+                decision_log['decision'] = f"EXIT at T2 ({self.exit_percent_target2}%)"
                 self.sell(symbol, self.primary_resolution, qty_to_sell_t2, trade_details['target2'], timestamp, is_live)
                 trade_details['t2_hit'] = True
 
@@ -273,7 +270,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         if not trade_details.get('t1_hit', False) and latest_analysis['high'] >= trade_details['target1']:
             qty_to_sell = int(trade_details['initial_quantity'] * self.exit_percent_target1)
             if qty_to_sell > 0 and active_trade['quantity'] >= qty_to_sell:
-                decision_log['decision'] = f"EXIT at T1 ({self.exit_percent_target1 * 100:.0f}%)"
+                decision_log['decision'] = f"EXIT at T1 ({self.exit_percent_target1}%)"
                 self.sell(symbol, self.primary_resolution, qty_to_sell, trade_details['target1'], timestamp, is_live)
                 trade_details['t1_hit'] = True
 
@@ -282,11 +279,7 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
             decision_log['decision'] = 'EXIT at Stop-Loss (Full)'
             self.sell(symbol, self.primary_resolution, active_trade['quantity'], trade_details['stop_loss'], timestamp, is_live)
             self.active_trades[symbol] = None # Close trade
-            return
-        
-        # If no exit condition was met, the decision is to hold.
-        if decision_log['decision'] == 'No Action':
-            decision_log['decision'] = 'HOLD'
+            return # Exit after a full sale
 
     def _calculate_targets(self, entry_price, risk_per_share):
         """Helper function to calculate all three profit targets."""

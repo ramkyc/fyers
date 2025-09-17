@@ -53,16 +53,8 @@ class TradingScheduler:
         else:
             print(f"[{current_time}] Step 1: Ensuring symbol master is up-to-date...")
             fetch_and_store_symbol_masters()
-
-        # --- CRITICAL FIX: Fetch historical data for the trading universe ---
-        print(f"[{current_time}] Step 1.5: Fetching required historical data...")
-        # Get the symbols we are about to trade from the generated config
-        stocks_config_path = os.path.join(project_root, 'pt_config_stocks.yaml')
-        if os.path.exists(stocks_config_path):
-            with open(stocks_config_path, 'r') as f:
-                stocks_config = yaml.safe_load(f) or {}
-            # For live trading, we ONLY fetch data for the top 10 stocks.
         
+        # This function now handles its own configuration loading internally.
         prepare_live_strategy_data()
 
         try:
@@ -87,16 +79,24 @@ class TradingScheduler:
             # --- Multi-Timeframe Strategy Instantiation ---
             # Create a separate, independent strategy instance for each target timeframe.
             # This allows each timeframe to manage its own state and positions.
-            target_timeframes = ['1', '5', '15', '30', '60']
+            # Use the timeframes from the config, or fall back to the hardcoded list for backward compatibility.
+            target_timeframes = live_config.get('timeframes', ['1', '5', '15', '30', '60'])
+
             strategies_to_run = []
             for tf in target_timeframes:
+                # --- ARCHITECTURAL FIX: Instantiate the strategy to ask it what it needs ---
+                # 1. Create a temporary instance just to get its required resolutions.
+                temp_strategy = strategy_class(symbols=[], primary_resolution=tf)
+                all_required_resolutions = temp_strategy.get_required_resolutions()
+
+                # 2. Create the real, final instance with all the correct information.
                 strategy_instance = strategy_class(
                     symbols=live_config['symbols'],
                     portfolio=None, # Will be set by the engine
                     order_manager=None, # Will be set by the engine
-                    # Use hardcoded capital deployment, but allow other params if they exist
                     params={**live_config.get('params', {}), 'trade_value': 100000},
-                    resolutions=[tf] # Set the primary resolution for this instance
+                    resolutions=all_required_resolutions, # Pass all resolutions
+                    primary_resolution=tf # Explicitly set the primary resolution for this instance
                 )
                 strategies_to_run.append(strategy_instance)
 
@@ -195,7 +195,9 @@ class TradingScheduler:
         while not self.should_exit:
             # Non-blocking check for scheduled jobs
             schedule.run_pending()
-            # Sleep for a short duration to prevent a busy-wait loop and be responsive to signals
+            # Sleep for a short duration to prevent a busy-wait loop.
+            # This is CRITICAL for allowing the process to receive and handle
+            # signals like SIGINT (Ctrl+C) or SIGTERM from the stop_engine function.
             time.sleep(1)
 
 # --- Main Execution ---
@@ -204,10 +206,12 @@ if __name__ == "__main__":
 
     def signal_handler(sig, frame):
         print(f"\nGraceful shutdown signal received ({signal.Signals(sig).name}). Stopping engine...")
-        # Don't call stop_trading_engine directly from the handler,
-        # as it can lead to race conditions. Instead, set the flag
-        # and let the main loop handle the clean shutdown.
-        scheduler.should_exit = True
+        # --- DEFINITIVE FIX for Shutdown ---
+        # The signal handler must be the single point of control for shutdown.
+        # It performs the cleanup and then immediately exits the process.
+        # This prevents the main loop's `time.sleep()` from interfering with a timely exit.
+        scheduler.stop_trading_engine()
+        sys.exit(0) # Exit gracefully
 
     signal.signal(signal.SIGINT, signal_handler) # Handle Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)

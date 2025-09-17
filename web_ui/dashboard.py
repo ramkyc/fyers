@@ -12,17 +12,22 @@ from streamlit_option_menu import option_menu
 # Import the new page modules
 from web_ui import backtesting_ui, papertrader_ui
 
-def main():
-    """Main function to run the Streamlit dashboard."""
-
-    # --- Ensure SymbolManager is initialized at startup ---
+@st.cache_resource # Use cache_resource for singleton-like objects that should persist
+def initialize_symbol_manager():
+    """
+    Initializes the SymbolManager once per session and caches the instance.
+    This prevents it from being reloaded on every UI refresh.
+    """
     try:
         from src.symbol_manager import SymbolManager
-        SymbolManager().reload_master_data()
-        print("SymbolManager initialized at dashboard startup.")
+        sm = SymbolManager()
+        sm.reload_master_data() # This is now safe to call as it's inside a cached function
+        print("SymbolManager initialized once at dashboard startup.")
     except Exception as e:
         print(f"[Startup] Failed to initialize SymbolManager: {e}")
 
+def main():
+    """Main function to run the Streamlit dashboard."""
     st.set_page_config(layout="wide")
     st.title("TraderBuddy Dashboard")
 
@@ -33,6 +38,9 @@ def main():
             icons=['graph-up-arrow', 'broadcast-pin'],
             default_index=0,
         )
+
+    # --- Initialize shared resources once ---
+    initialize_symbol_manager()
 
     if app_mode == "Backtesting":
         backtesting_ui.render_page()
