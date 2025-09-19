@@ -71,13 +71,20 @@ def start_engine():
 
     try:
         script_path = os.path.join(project_root, 'src', 'trading_scheduler.py')
-        command = [sys.executable, script_path]
-        # CRITICAL FIX: Launch the engine in a new process session.
-        # This makes it a daemon process, fully detached from the Streamlit dashboard's process group.
-        # It will no longer receive stray signals (like SIGCHLD) meant for the parent, which was causing it to terminate immediately after a restart.
-        process = subprocess.Popen(command, cwd=project_root, start_new_session=True)
+        log_file_path = os.path.join(config.LOG_PATH, 'trading_scheduler.log')
+
+        # --- ROBUST BACKGROUND PROCESS ---
+        # Use 'nohup' to ensure the process is fully detached from the terminal.
+        # Redirect stdout and stderr to a dedicated log file.
+        # The '&' at the end is crucial for running the command in the background.
+        command = f"nohup {sys.executable} -u {script_path} > {log_file_path} 2>&1 &"
         
-        return True, f"Engine start signal sent (PID: {process.pid})."
+        # We use subprocess.Popen with shell=True to correctly handle the nohup and redirection.
+        # The process will run in the background, and Popen will return immediately.
+        # We don't need to store the process object as it's now managed by the OS.
+        subprocess.Popen(command, shell=True, cwd=project_root)
+        
+        return True, "Engine start signal sent. It will run in the background."
     except Exception as e:
         return False, f"Failed to start engine: {e}"
 

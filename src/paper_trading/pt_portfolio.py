@@ -1,6 +1,9 @@
 # src/paper_trading/pt_portfolio.py
 
 import datetime
+import sqlite3
+import pandas as pd
+import os
 import config # config.py is now in the project root
 
 class PT_Portfolio:
@@ -20,12 +23,96 @@ class PT_Portfolio:
         self.run_id = run_id
         self.initial_cash = initial_cash
         self.current_cash = initial_cash
-        self.positions = {}  # Key: (symbol, timeframe), Value: {'quantity': int, 'avg_price': float}
+        self.positions = {}  # Key: (symbol, timeframe), Value: {'quantity': int, 'avg_price': float, 'run_id': str}
         self.trades = [] # To log all trades
         self.position_capital = {} # Key: (symbol, timeframe), Value: float (compounding capital for this slot)
         self.equity_curve = [] # To log portfolio value over time for backtest analysis
         self.enable_logging = enable_logging
 
+        # --- NEW: Portfolio Hydration ---
+        self._hydrate_from_db()
+
+    def db_conn(self):
+        """Provides a direct, safe connection to the trading database."""
+        # This helper method prevents the recursion error that was happening
+        # in print_final_summary by avoiding re-instantiation of the class.
+        return sqlite3.connect(f'file:{config.TRADING_DB_FILE}?mode=ro', uri=True)
+
+    def _load_open_positions(self):
+        """
+        Loads existing open positions from the database to hydrate the portfolio
+        at the start of a new session. This enables persistent positional trading.
+        """
+        print("Hydrating portfolio with existing open positions...")
+        if not os.path.exists(config.TRADING_DB_FILE):
+            print("  - Trading log database not found. Starting with a fresh portfolio.")
+            return
+        try:
+            # Connect in read-only mode
+            with sqlite3.connect(f'file:{config.TRADING_DB_FILE}?mode=ro', uri=True) as con:
+                cursor = con.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='live_positions'")
+                if cursor.fetchone() is None:
+                    print("  - 'live_positions' table not found. Starting with a fresh portfolio.")
+                    return
+
+                df = pd.read_sql_query("SELECT * FROM live_positions", con)
+                if df.empty:
+                    print("  - No open positions found to load.")
+                    return
+
+                for _, row in df.iterrows():
+                    position_key = (row['symbol'], row['timeframe'])
+                    self.positions[position_key] = {'quantity': row['quantity'], 'avg_price': row['avg_price'], 'run_id': row['run_id']}
+                print(f"  - Successfully loaded {len(self.positions)} open positions.")
+        except Exception as e:
+            print(f"Warning: Could not load open positions from database. Starting fresh. Error: {e}")
+            self.positions = {}
+    
+    def _hydrate_from_db(self):
+        """
+        Loads the complete state of the portfolio (positions, trades, equity curve)
+        from the database. This is the single point of contact with the DB for analysis.
+        """
+        if not os.path.exists(config.TRADING_DB_FILE):
+            print("  - Trading DB file not found. Starting with a fresh portfolio.")
+            return
+
+        print(f"Hydrating portfolio state...")
+        try:
+            with sqlite3.connect(f'file:{config.TRADING_DB_FILE}?mode=ro', uri=True) as con:
+                # 1. Load Open Positions
+                # This is now the single source for loading open positions for the UI.
+                positions_df = pd.read_sql_query("SELECT * FROM live_positions", con)
+                if not positions_df.empty:
+                    for _, row in positions_df.iterrows():
+                        self.positions[(row['symbol'], row['timeframe'])] = {
+                            'quantity': row['quantity'], 
+                            'avg_price': row['avg_price'], 
+                            'run_id': row['run_id'],
+                            'ltp': row.get('ltp', row['avg_price']), # Include ltp, with a fallback
+                            'mtm': row.get('mtm', 0.0) # Include mtm, with a fallback
+                        }
+                    print(f"  - Loaded {len(self.positions)} open positions.")
+
+                # 2. Load Trade Log for the specific run
+                if self.run_id:
+                    table = 'live_paper_trades' if self.run_id.startswith('live_') else 'backtest_trades'
+                    trades_df = pd.read_sql_query(f"SELECT * FROM {table} WHERE run_id = ?", con, params=(self.run_id,))
+                    self.trades = trades_df.to_dict('records')
+                    print(f"  - Loaded {len(self.trades)} trades for run '{self.run_id}'.")
+
+                # 3. Load Equity Curve for backtest runs only
+                if self.run_id and not self.run_id.startswith('live_'):
+                    table = 'bt_portfolio_log'
+                    equity_df = pd.read_sql_query(f"SELECT * FROM {table} WHERE run_id = ?", con, params=(self.run_id,))
+                    self.equity_curve = equity_df.to_dict('records')
+                    print(f"  - Loaded {len(self.equity_curve)} equity curve points for backtest run '{self.run_id}'.")
+
+        except Exception as e:
+            print(f"Warning: Could not fully hydrate portfolio from database. Error: {e}")
+            self.positions, self.trades, self.equity_curve = {}, [], []
+            
     def log_portfolio_value(self, timestamp, current_prices):
         """
         Logs the portfolio's value. For backtesting, it stores in memory.
@@ -95,7 +182,7 @@ class PT_Portfolio:
 
         # Update holdings
         if position_key not in self.positions:
-            self.positions[position_key] = {'quantity': 0, 'avg_price': 0.0}
+            self.positions[position_key] = {'quantity': 0, 'avg_price': 0.0, 'run_id': self.run_id}
         
         # If this is the first BUY for this slot, initialize its capital tracker
         if quantity > 0 and position_key not in self.position_capital:
@@ -215,9 +302,19 @@ class PT_Portfolio:
         if not self.trades:
             print("  <No trades executed>")
         else:
-            sorted_trades = sorted(self.trades, key=lambda x: x['timestamp'])
-            print(f"  Total Trades: {len(sorted_trades)}")
-            for trade in sorted_trades:
+            # --- OPTIMIZATION: Limit the number of trades printed on shutdown for speed ---
+            # Printing thousands of trades can significantly slow down the exit process. We only show the last few.
+            with self.db_conn() as con:
+                query = "SELECT * FROM live_paper_trades WHERE run_id = ? ORDER BY timestamp DESC LIMIT 25"
+                trades_to_print_df = pd.read_sql_query(query, con, params=(self.run_id,))
+                
+                # The trades are fetched in descending order, so we reverse them for chronological display
+                trades_to_print = trades_to_print_df.iloc[::-1].to_dict('records')
+
+            print(f"  Total Trades: {len(self.trades)}")
+            print(f"  (Showing last {len(trades_to_print)} trades for brevity)")
+            
+            for trade in trades_to_print:
                 print(f"  - {trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}: {trade['action']} {abs(trade['quantity'])} {trade['symbol']} @ {trade['price']:.2f}")
         
         print("---------------------------------")

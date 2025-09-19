@@ -134,7 +134,12 @@ class TradingScheduler:
             self.paper_trading_engine.stop()
             self.paper_trading_engine = None
 
-        self.should_exit = True
+        # --- ARCHITECTURAL FIX: Ensure immediate and graceful shutdown ---
+        # Instead of just setting a flag and waiting for the loop to check it,
+        # we send a SIGTERM signal to our own process. This is caught by the
+        # signal_handler, which guarantees a clean exit and PID file removal.
+        print(f"[{current_time}] Sending SIGTERM to self (PID: {os.getpid()}) to trigger graceful shutdown.")
+        os.kill(os.getpid(), signal.SIGTERM)
 
     def run(self):
         """

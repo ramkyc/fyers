@@ -67,6 +67,33 @@ class PerformanceAnalyzer:
 
         return winning_trades_pnl, losing_trades_pnl
 
+    def _generate_equity_curve_from_trades(self):
+        """
+        Generates an equity curve in-memory from the trade log.
+        This is used for live sessions where the equity curve is not persisted to the DB.
+        """
+        if not self.portfolio.trades:
+            self.portfolio.equity_curve = [{'timestamp': datetime.datetime.now(), 'value': self.portfolio.initial_cash, 'pnl': 0.0}]
+            return
+
+        trades_df = pd.DataFrame(self.portfolio.trades)
+        trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'])
+        trades_df = trades_df.sort_values('timestamp')
+
+        # Calculate P&L from each trade
+        trades_df['pnl'] = -trades_df['quantity'] * trades_df['price']
+        
+        # Group by timestamp and sum P&L for trades at the same time
+        pnl_over_time = trades_df.groupby('timestamp')['pnl'].sum()
+        
+        # Calculate cumulative P&L
+        cumulative_pnl = pnl_over_time.cumsum()
+        
+        # Create the equity curve DataFrame
+        equity_df = pd.DataFrame(cumulative_pnl).reset_index()
+        equity_df['value'] = self.portfolio.initial_cash + equity_df['pnl']
+        self.portfolio.equity_curve = equity_df.to_dict('records')
+
     def _calculate_max_drawdown(self) -> float:
         """
         Calculates the maximum drawdown from the portfolio's equity curve.
@@ -133,21 +160,31 @@ class PerformanceAnalyzer:
         summary = self.portfolio.get_performance_summary(final_prices)
         
         # Calculate per-trade P&L
-        winning_pnl, losing_pnl = self._calculate_trade_pnl()
 
-        # Calculate advanced metrics
-        max_drawdown = self._calculate_max_drawdown()
-        sharpe_ratio = self._calculate_sharpe_ratio()
+        # --- FIX: Ensure equity curve exists for live sessions ---
+        # If the equity curve wasn't loaded from the DB (i.e., for a live run),
+        # generate it on-the-fly from the trade log to calculate drawdown and Sharpe.
+        if not self.portfolio.equity_curve:
+            # For live runs, we don't have a true bar-by-bar equity curve,
+            # so drawdown and sharpe calculations are not meaningful.
+            max_drawdown = 0.0
+            sharpe_ratio = 0.0
+        else:
+            # For backtests, calculate them from the persisted equity curve.
+            max_drawdown = self._calculate_max_drawdown()
+            sharpe_ratio = self._calculate_sharpe_ratio()
+        
+        # --- CORRECTED P&L CALCULATION ---
+        # Realized P&L is the sum of P&L from all closed trades.
+        # Total P&L is the sum of realized and unrealized P&L.
+        winning_pnl, losing_pnl = self._calculate_trade_pnl()
+        realized_pnl_from_trades = sum(winning_pnl) + sum(losing_pnl)
+        total_pnl = realized_pnl_from_trades + summary['unrealized_pnl']
 
         metrics = {
-            "initial_cash": summary['initial_cash'],
-            "final_cash": summary['final_cash'],
-            "holdings_value": summary['holdings_value'],
-            "total_portfolio_value": summary['total_portfolio_value'],
-            "total_pnl": summary['total_pnl'],
-            "realized_pnl": summary['realized_pnl'],
-            "unrealized_pnl": summary['unrealized_pnl'],
-            "total_trades": summary['total_trades'],
+            **summary, # Unpack all values from the portfolio summary
+            "total_pnl": total_pnl,
+            "realized_pnl": realized_pnl_from_trades,
             "winning_trades": len(winning_pnl),
             "losing_trades": len(losing_pnl),
             "win_rate": 0.0,
@@ -155,8 +192,7 @@ class PerformanceAnalyzer:
             "average_loss": 0.0,
             "profit_factor": 0.0,
             "max_drawdown": max_drawdown,
-            "sharpe_ratio": sharpe_ratio,
-            "total_realized_pnl_from_trades": sum(winning_pnl) + sum(losing_pnl)
+            "sharpe_ratio": sharpe_ratio
         }
 
         total_wins = sum(winning_pnl)

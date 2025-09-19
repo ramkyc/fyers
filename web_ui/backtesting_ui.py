@@ -10,7 +10,8 @@ from src.reporting.performance_analyzer import PerformanceAnalyzer
 from src.backtesting.bt_engine import BT_Engine
 from src.strategies import STRATEGY_MAPPING_BT # Use the backtesting-specific mapping
 from src.market_calendar import is_market_working_day
-from web_ui.utils import get_all_symbols, get_market_time_options, run_backtest_with_data_update
+from web_ui.utils import get_all_symbols, get_market_time_options # Shared utils
+from web_ui.bt_utils import run_backtest_with_data_update, run_backtest_for_worker # Backtesting-specific utils
 import config
 
 def display_optimization_results(results_df):
@@ -163,14 +164,14 @@ def render_page():
                 strategy_params['rr2'] = st.number_input("R:R Target 2", 0.5, 10.0, 1.5, 0.1, key="bt_opc_rr2")
                 strategy_params['exit_pct2'] = st.slider("Exit % at T2", 10, 100, 20, 5, key="bt_opc_pct2")
                 strategy_params['rr3'] = st.number_input("R:R Target 3", 1.0, 20.0, 3.0, 0.1, key="bt_opc_rr3")
-                st.info("The remaining position will be sold at Target 3.")
+                st.info("The remaining position will be sold at Target 3.", icon="ℹ️")
             run_button_label = "Run Backtest"
 
         st.subheader("Common Parameters")
         strategy_params['trade_value'] = st.number_input("Trade Value (INR)", min_value=1000.0, value=100000.0, step=1000.0, key="bt_common_trade_value")
         initial_cash = st.number_input("Initial Cash", min_value=1000.0, value=5000000.0, step=1000.0)
         
-        run_button_clicked = st.form_submit_button(run_button_label, width='stretch')
+        run_button_clicked = st.form_submit_button(run_button_label, use_container_width=True)
         if run_button_clicked:
             st.session_state.run_button_clicked = True
 

@@ -7,10 +7,8 @@ sys.dont_write_bytecode = True # Prevent __pycache__ creation
 
 import streamlit as st
 import datetime
+import subprocess
 from streamlit_option_menu import option_menu
-
-# Import the new page modules
-from web_ui import backtesting_ui, papertrader_ui
 
 @st.cache_resource # Use cache_resource for singleton-like objects that should persist
 def initialize_symbol_manager():
@@ -26,10 +24,12 @@ def initialize_symbol_manager():
     except Exception as e:
         print(f"[Startup] Failed to initialize SymbolManager: {e}")
 
+# --- Import page modules AFTER dependency check ---
+from web_ui import backtesting_ui, papertrader_ui
+
 def main():
     """Main function to run the Streamlit dashboard."""
     st.set_page_config(layout="wide")
-    st.title("TraderBuddy Dashboard")
 
     with st.sidebar:
         app_mode = option_menu(

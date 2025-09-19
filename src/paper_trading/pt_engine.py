@@ -25,16 +25,34 @@ class NpEncoder(json.JSONEncoder):
         return super(NpEncoder, self).default(obj)
 
 class PT_Engine(data_ws.FyersDataSocket):
-    def _log_to_db(self, table_name: str, data: dict):
-        """A generic helper to log structured data to a database table."""
+    def _flush_log_buffer_to_db(self):
+        """Writes the buffered logs to the database in a single transaction."""
+        if not self.log_buffer:
+            return
+
+        # Separate logs by table
+        logs_by_table = defaultdict(list)
+        for table_name, run_id, timestamp, log_data in self.log_buffer:
+            logs_by_table[table_name].append((run_id, timestamp, log_data))
+        
         try:
             with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
-                con.execute(
-                    f"INSERT INTO {table_name} (run_id, timestamp, log_data) VALUES (?, ?, ?)",
-                    (self.run_id, datetime.datetime.now().isoformat(), json.dumps(data, cls=NpEncoder))
-                )
+                cursor = con.cursor()
+                for table_name, records in logs_by_table.items():
+                    cursor.executemany(
+                        f"INSERT INTO {table_name} (run_id, timestamp, log_data) VALUES (?, ?, ?)",
+                        records
+                    )
+                con.commit()
+            self.log_buffer.clear() # Clear buffer only on successful write
         except Exception as e:
-            print(f"[DBLogError] Failed to log to {table_name}: {e}")
+            print(f"[DBLogError] Failed to flush log buffer: {e}")
+
+    def _log_to_db(self, table_name: str, data: dict):
+        """A generic helper to buffer structured data to be logged to a database table."""
+        self.log_buffer.append(
+            (table_name, self.run_id, datetime.datetime.now().isoformat(), json.dumps(data, cls=NpEncoder))
+        )
 
     def _log_debug(self, msg: str, data: dict = None):
         """Logs a debug message to the database."""
@@ -88,6 +106,7 @@ class PT_Engine(data_ws.FyersDataSocket):
         # New structure for multi-resolution resampling
         # Key: resolution (str), Value: {symbol: OHLC dict}
         self.incomplete_bars = defaultdict(dict)
+        self.log_buffer = [] # Buffer for batching log writes to the DB
 
         self.bar_history = {} # For maintaining a rolling history of completed bars for the strategy
         self.symbols_to_subscribe = []
@@ -213,50 +232,65 @@ class PT_Engine(data_ws.FyersDataSocket):
         try:
             with sqlite3.connect(database=config.TRADING_DB_FILE) as con:
                 cursor = con.cursor()
+
+                # --- ARCHITECTURAL FIX for Positional Trading State ---
+                # To ensure the database is an exact mirror of the in-memory portfolio,
+                # we perform a full refresh. This is more resilient than UPSERT if the
+                # underlying schema has issues (like a missing PRIMARY KEY).
+                
+                # 1. Clear all existing position records.
+                cursor.execute("DELETE FROM live_positions;")
+
+                # 2. If there are no open positions, we are done.
                 if not self.portfolio.positions:
+                    con.commit()
                     return
 
+                # 3. Prepare and insert the current state of all open positions.
                 positions_to_log = []
                 for (symbol, timeframe), data in self.portfolio.positions.items():
                     ltp = self.last_known_prices.get(symbol, data['avg_price'])
                     mtm = (ltp - data['avg_price']) * data['quantity']
 
-                    # Get the corresponding strategy to fetch SL/TP details
-                    strategy = self.timeframe_to_strategy.get(timeframe) # Correctly look up the strategy for the position's timeframe
+                    strategy = self.timeframe_to_strategy.get(timeframe)
                     trade_details = strategy.active_trades.get(symbol) if strategy else None
 
                     positions_to_log.append((
-                        self.run_id, timestamp.isoformat(), symbol, timeframe,
+                        symbol, timeframe, timestamp.isoformat(),
                         data['quantity'], data['avg_price'], ltp, mtm,
                         trade_details.get('stop_loss') if trade_details else None,
                         trade_details.get('target1') if trade_details else None,
                         trade_details.get('target2') if trade_details else None,
                         trade_details.get('target3') if trade_details else None,
+                        data.get('run_id', self.run_id) # Log the run_id of the entry
                     ))
                 
-                # --- DEFINITIVE FIX for Duplicate Position Logging ---
-                # The `INSERT OR REPLACE` command does not work reliably with `WITHOUT ROWID` tables.
-                # The correct, modern approach is to use the `UPSERT` syntax, which is supported since SQLite 3.24.0.
-                # This will insert a new row, but if a row with the same primary key (run_id, symbol, timeframe)
-                # already exists, it will update that existing row instead of inserting a duplicate.
-                upsert_sql = """
-                    INSERT INTO live_positions (run_id, timestamp, symbol, timeframe, quantity, avg_price, ltp, mtm, stop_loss, target1, target2, target3)
+                insert_sql = """
+                    INSERT INTO live_positions (symbol, timeframe, timestamp, quantity, avg_price, ltp, mtm, stop_loss, target1, target2, target3, run_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(run_id, symbol, timeframe) DO UPDATE SET
-                        timestamp=excluded.timestamp,
-                        quantity=excluded.quantity,
-                        avg_price=excluded.avg_price,
-                        ltp=excluded.ltp,
-                        mtm=excluded.mtm,
-                        stop_loss=excluded.stop_loss,
-                        target1=excluded.target1,
-                        target2=excluded.target2,
-                        target3=excluded.target3;
                 """
-                cursor.executemany(upsert_sql, positions_to_log)
+                if positions_to_log:
+                    cursor.executemany(insert_sql, positions_to_log)
+                
                 con.commit()
         except Exception as e:
             print(f"Error logging live positions: {e}")
+
+    def _cache_live_prices(self):
+        """Writes the current last_known_prices to a dedicated cache table for the UI."""
+        if not self.last_known_prices:
+            return
+        
+        price_data = [
+            (symbol, price) for symbol, price in self.last_known_prices.items()
+        ]
+        
+        try:
+            with sqlite3.connect(database=config.LIVE_MARKET_DB_FILE) as con:
+                con.execute("DELETE FROM live_ltp_cache;") # Clear old prices
+                con.executemany("INSERT INTO live_ltp_cache (symbol, ltp) VALUES (?, ?)", price_data)
+        except Exception as e:
+            print(f"[DBLogError] Failed to cache live prices: {e}")
 
     def _log_portfolio_value(self, timestamp):
         """Logs the portfolio's current value to the database for the equity curve."""
@@ -425,7 +459,9 @@ class PT_Engine(data_ws.FyersDataSocket):
         # --- Log Portfolio and Positions (only on the 1-minute interval to avoid excessive logging) ---
         if resolution == '1':
             self._log_live_positions(completed_bar['timestamp'])
-            self._log_portfolio_value(completed_bar['timestamp']) # Add this call to persist equity curve
+            self._cache_live_prices() # <-- ADDED: Cache the latest prices for the UI
+            self._flush_log_buffer_to_db() # Flush all buffered logs
+            # self._log_portfolio_value(completed_bar['timestamp']) # Equity curve is no longer persisted for live sessions
 
             # --- Rule: Intraday Forced Exits (checked on every 1-min bar) ---
             if self.paper_trade_type == 'Intraday' and completed_bar['timestamp'].time() >= self.intraday_exit_time:
@@ -497,6 +533,9 @@ class PT_Engine(data_ws.FyersDataSocket):
         """
         shutdown_timestamp = datetime.datetime.now()
         print(f"[{shutdown_timestamp}] Initiating graceful shutdown...")
+
+        # --- Final Flush: Ensure all pending logs are written before exit ---
+        self._flush_log_buffer_to_db()
 
         # --- Process any remaining incomplete bars and square off positions BEFORE disconnecting ---
         print(f"[{datetime.datetime.now()}] Processing any remaining incomplete bars before shutdown...")

@@ -52,11 +52,6 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         self.daily_open_prices = {symbol: None for symbol in self.symbols}
         self.last_processed_day = {symbol: None for symbol in self.symbols}
         self.implied_crossover_history: 'defaultdict[str, deque[float]]' = defaultdict(deque)
-        self.debug_log = []
-
-    def get_debug_log(self) -> list[dict]:
-        """Returns the collected debug log."""
-        return self.debug_log
 
     @staticmethod
     def get_optimizable_params() -> list[dict]:
@@ -75,26 +70,20 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         """
         # The primary resolution is already known. We just need to declare the *additional*
         # resolutions required for the strategy's logic.
-        required = {self.primary_resolution, "D"}
+        # --- DEFINITIVE FIX ---
+        # The strategy requires '1'-minute data for the crossover count calculation. It must be requested here.
+        required = {self.primary_resolution, "D", "1"}
         return sorted(list(required), key=lambda x: (x != self.primary_resolution, x))
 
     def _log_live_decision_data(self, symbol: str, timestamp: datetime.datetime, data: dict):
-        """Helper to log the data used for making a live trade decision."""
-        def _format_float(value):
-            """Safely formats a float or returns 'nan'."""
-            if isinstance(value, (int, float)):
-                return f"{value:.2f}"
-            return "nan"
-
-        # ANSI color codes for better readability in the console
-        GREEN = '\033[92m'
-        RED = '\033[91m'
-        YELLOW = '\033[93m'
-        RESET = '\033[0m'
-
-        def colorize(value, condition):
-            return f"{GREEN}{value}{RESET}" if condition else f"{RED}{value}{RESET}"
-
+        """
+        Helper to log the data used for making a live trade decision.
+        This now uses the structured logging system from the base strategy.
+        """
+        # This now uses the structured logging system from the base strategy
+        # The UI specifically looks for the message "Strategy Decision"
+        # In backtesting, we just append the dictionary to the debug_log list.
+        # The base class's _log_debug method handles the distinction.
         self._log_debug({
             "timestamp": timestamp, "symbol": symbol, "ltp": data.get('ltp'),
             "ema_fast": data.get('ema_fast'), "ema_slow": data.get('ema_slow'), "ema_bullish": data.get('is_ema_bullish'),
@@ -115,148 +104,97 @@ class OpeningPriceCrossoverStrategy(BaseStrategy):
         market_data = market_data_all_resolutions.get(self.primary_resolution, {})
 
         for symbol in self.symbols:
-            if symbol not in market_data:
-                continue
-
-            # --- SIMPLIFIED: Always analyze the primary symbol ---
-            analysis_symbol = symbol
-            analysis_market_data = market_data_all_resolutions
-
-            bar_history_list = market_data[symbol]
-            df = pd.DataFrame(bar_history_list)
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df = df.set_index('timestamp')
-
-            # --- Daily Open Price Management (for Live Trading) ---
-            current_day = timestamp.date()
-            if self.last_processed_day.get(symbol) != current_day:
-                self.daily_open_prices[symbol] = df['open'].iloc[-1]
-                self.last_processed_day[symbol] = current_day
-            
-            # --- V3: Intelligent Daily Open Price Logic ---
-            daily_open_price = 0
-            # Correctly get the daily data for the specific symbol being analyzed
-            daily_data_for_symbol = analysis_market_data.get("D", {}).get(analysis_symbol)
-            # The engine now provides daily data as a simple dictionary.
-            if daily_data_for_symbol and isinstance(daily_data_for_symbol, dict):
-                daily_open_price = daily_data_for_symbol.get('open', 0)
-
-            # --- Indicator Calculations on the Analysis Symbol's Data ---
-            # Ensure we have enough data to calculate indicators
-            if len(df) < self.ema_slow_period or daily_open_price == 0:
-                continue
-            
-            # --- Indicator Calculations & State Capture ---
-            df.ta.ema(length=self.ema_fast_period, append=True)
-            df.ta.ema(length=self.ema_slow_period, append=True)
-            df.ta.atr(length=self.atr_period, append=True) # Calculate ATR
-            
-            # Get the latest values
-            latest_analysis = df.iloc[-1]
-            previous_analysis = df.iloc[-2] if len(df) > 1 else latest_analysis
-            
-            ema_fast = latest_analysis[f'EMA_{self.ema_fast_period}']
-            ema_slow = latest_analysis[f'EMA_{self.ema_slow_period}']
-            atr_value = latest_analysis.get(f'ATRr_{self.atr_period}', 0)
-
             # --- UNCONDITIONAL LOGGING SETUP ---
             # Create the log dictionary at the start of every bar processing.
             decision_log = {
                 'timestamp': timestamp.isoformat(), 'symbol': symbol, 'primary_resolution': self.primary_resolution,
-                'close': latest_analysis['close'], 'ema_fast': ema_fast, 'ema_slow': ema_slow,
-                'daily_open': daily_open_price, 'atr': atr_value, 'decision': 'No Action' # Default decision
+                'decision': 'No Action' # Default decision
             }
 
-            # --- Position Management ---
-            active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
-            
-            # 1. Check for Exits if a position is open
-            if active_trade and active_trade['quantity'] > 0:
-                trade_details = self.active_trades[symbol]
-                if not trade_details: continue # Should not happen if position is active
-                
-                # The _check_and_execute_exit method will now update the decision_log
-                self._check_and_execute_exit(symbol, latest_analysis, trade_details, active_trade, decision_log, timestamp, is_live)
-            
-            # 2. Check for Entries if no position is open
+            # --- NEW ROBUST LOGIC STRUCTURE ---
+            # 1. Check for sufficient data before doing any calculations
+            if symbol not in market_data:
+                decision_log['decision'] = 'No primary data for symbol'
             else:
-                # --- Entry Conditions ---
-                is_ema_bullish = ema_fast > ema_slow
-                is_price_bullish = latest_analysis['close'] >= latest_analysis['open']
+                bar_history_list = market_data[symbol]
+                df = pd.DataFrame(bar_history_list)
+                
+                # Get Daily Open Price
+                daily_data_for_symbol = market_data_all_resolutions.get("D", {}).get(symbol)
+                daily_open_price = daily_data_for_symbol.get('open', 0) if daily_data_for_symbol and isinstance(daily_data_for_symbol, dict) else 0
+                decision_log['daily_open'] = daily_open_price
 
-                # Use the accurate live count if available, otherwise use the backtest's implied count.
-                crossover_count = 0
-                if is_live:
-                    crossover_count = live_crossover_count
+                if len(df) < self.ema_slow_period or daily_open_price == 0:
+                    decision_log['decision'] = 'Not enough data for indicators'
                 else:
-                    crossover_count = self._calculate_implied_crossover_count(symbol, timestamp, daily_open_price, market_data_all_resolutions)
-
-                # Store and calculate average implied crossover count
-                self.implied_crossover_history[symbol].append(crossover_count)
-                if len(self.implied_crossover_history[symbol]) > 10:
-                    self.implied_crossover_history[symbol].popleft()
-                
-                average_implied_crossover_count = sum(self.implied_crossover_history[symbol]) / len(self.implied_crossover_history[symbol]) if self.implied_crossover_history[symbol] else 0
-
-                # --- V4: Sentiment Filter (Correctly handles Puts) ---
-                sentiment_filter_passed = False
-                is_put_option = "PE" in symbol.upper()
-
-                if is_put_option:
-                    # For Puts, we want weakness. The underlying should be BELOW its open.
-                    sentiment_filter_passed = latest_analysis['close'] < daily_open_price
-                else:
-                    # For Calls/Stocks, we want strength. The underlying should be ABOVE its open.
-                    sentiment_filter_passed = latest_analysis['close'] > daily_open_price
-                
-                # --- V5: Crossover Count Filter ---
-                # This is the core filter based on the dual-logic described in the class docstring.
-                is_crossover_spike = crossover_count > average_implied_crossover_count
-
-                all_conditions_met = is_ema_bullish and is_price_bullish and sentiment_filter_passed and is_crossover_spike
-                
-                # Update decision log with entry check data
-                decision_log.update({
-                    'crossover_count': crossover_count, 'avg_crossover_count': average_implied_crossover_count,
-                    'is_ema_bullish': is_ema_bullish, 'is_price_bullish': is_price_bullish,
-                    'sentiment_filter_passed': sentiment_filter_passed, 'is_crossover_spike': is_crossover_spike,
-                    'all_conditions_met': all_conditions_met
-                })
-
-                # --- Final Entry Decision ---
-                if all_conditions_met:
-                    entry_price = latest_analysis['close']
-                    volatility_stop = min(latest_analysis['low'], previous_analysis['low'])
-                    atr_stop = entry_price - (atr_value * self.atr_multiplier) # Stop loss is based on underlying's volatility
-                    stop_loss = min(volatility_stop, atr_stop)
-
-                    risk_per_share = entry_price - stop_loss
-
-                    if risk_per_share <= 0: continue
-
-                    target1, target2, target3 = self._calculate_targets(entry_price, risk_per_share)
+                    # 2. All data is present, proceed with calculations
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                    df = df.set_index('timestamp')
+                    df.ta.ema(length=self.ema_fast_period, append=True)
+                    df.ta.ema(length=self.ema_slow_period, append=True)
+                    df.ta.atr(length=self.atr_period, append=True)
                     
-                    # Dynamic quantity calculation based on trade value
-                    if entry_price > 0:
-                        capital_to_deploy = self.portfolio.get_capital_for_position(symbol, self.primary_resolution, self.trade_value)
-                        quantity = int(capital_to_deploy / entry_price)
+                    latest_analysis = df.iloc[-1]
+                    previous_analysis = df.iloc[-2] if len(df) > 1 else latest_analysis
+                    ema_fast = latest_analysis[f'EMA_{self.ema_fast_period}']
+                    ema_slow = latest_analysis[f'EMA_{self.ema_slow_period}']
+                    atr_value = latest_analysis.get(f'ATRr_{self.atr_period}', 0)
 
-                        if quantity > 0:
-                            decision_log['decision'] = 'BUY'
-                            self.buy(symbol, self.primary_resolution, quantity, entry_price, timestamp, is_live)
-                            self.active_trades[symbol] = {
-                                'stop_loss': stop_loss,
-                                'target1': target1,
-                                'target2': target2,
-                                'target3': target3,
-                                'initial_quantity': quantity,
-                                't1_hit': False,
-                                't2_hit': False,
-                                't3_hit': False # Not strictly needed but good for consistency
-                            }
-            
+                    # Calculate crossover stats
+                    crossover_count = self._calculate_implied_crossover_count(symbol, timestamp, daily_open_price, market_data_all_resolutions)
+                    self.implied_crossover_history[symbol].append(crossover_count)
+                    if len(self.implied_crossover_history[symbol]) > 10:
+                        self.implied_crossover_history[symbol].popleft()
+                    average_implied_crossover_count = sum(self.implied_crossover_history[symbol]) / len(self.implied_crossover_history[symbol]) if self.implied_crossover_history[symbol] else 0
+
+                    # Update log with all calculated data
+                    decision_log.update({
+                        'close': latest_analysis['close'], 'ema_fast': ema_fast, 'ema_slow': ema_slow, 'atr': atr_value,
+                        'crossover_count': crossover_count, 'avg_crossover_count': average_implied_crossover_count
+                    })
+
+                    # 3. Position Management
+                    active_trade = self.portfolio.get_position(symbol, self.primary_resolution)
+                    if active_trade and active_trade.get('quantity', 0) > 0:
+                        trade_details = self.active_trades[symbol]
+                        if trade_details:
+                            self._check_and_execute_exit(symbol, latest_analysis, trade_details, active_trade, decision_log, timestamp, is_live)
+                    else:
+                        # Check for Entries
+                        is_ema_bullish = ema_fast > ema_slow
+                        is_price_bullish = latest_analysis['close'] >= latest_analysis['open']
+                        sentiment_filter_passed = latest_analysis['close'] > daily_open_price
+                        is_crossover_spike = crossover_count > average_implied_crossover_count
+                        all_conditions_met = is_ema_bullish and is_price_bullish and sentiment_filter_passed and is_crossover_spike
+                        
+                        decision_log.update({
+                            'is_ema_bullish': is_ema_bullish, 'is_price_bullish': is_price_bullish,
+                            'sentiment_filter_passed': sentiment_filter_passed, 'is_crossover_spike': is_crossover_spike,
+                            'all_conditions_met': all_conditions_met
+                        })
+
+                        if all_conditions_met:
+                            entry_price = latest_analysis['close']
+                            volatility_stop = min(latest_analysis['low'], previous_analysis['low'])
+                            atr_stop = entry_price - (atr_value * self.atr_multiplier)
+                            stop_loss = min(volatility_stop, atr_stop)
+                            risk_per_share = entry_price - stop_loss
+
+                            if risk_per_share > 0:
+                                target1, target2, target3 = self._calculate_targets(entry_price, risk_per_share)
+                                capital_to_deploy = self.portfolio.get_capital_for_position(symbol, self.primary_resolution, self.trade_value)
+                                quantity = int(capital_to_deploy / entry_price)
+
+                                if quantity > 0:
+                                    decision_log['decision'] = 'BUY'
+                                    self.buy(symbol, self.primary_resolution, quantity, entry_price, timestamp, is_live)
+                                    self.active_trades[symbol] = {
+                                        'stop_loss': stop_loss, 'target1': target1, 'target2': target2, 'target3': target3,
+                                        'initial_quantity': quantity, 't1_hit': False, 't2_hit': False, 't3_hit': False
+                                    }
+
             # --- UNCONDITIONAL LOGGING ---
-            # Log the final decision for this bar, regardless of what happened.
+            # Log the decision for this bar, for this symbol, regardless of the outcome.
             self._log_debug(decision_log)
 
     def _check_and_execute_exit(self, symbol: str, latest_analysis: pd.Series, trade_details: dict, active_trade: dict, decision_log: dict, timestamp: datetime.datetime, is_live: bool):

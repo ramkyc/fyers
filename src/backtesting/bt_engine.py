@@ -28,7 +28,6 @@ class BT_Engine:
         """
         self.start_datetime = start_datetime
         self.end_datetime = end_datetime
-        self.db_file = db_file
         self.resolutions = resolutions if resolutions is not None else ["D"]
         self.primary_resolution = self.resolutions[0] # The first resolution is considered primary for iteration
         self.all_loaded_data = {}
@@ -238,8 +237,6 @@ class BT_Engine:
                         
                         # If it's not 1-min data, we only want the single latest bar, not a list.
                         if res != '1':
-                            # For other secondary resolutions (like 'D'), the strategy expects a simple dictionary for the single bar, not a list.
-                            # This is the definitive fix for the empty debug log issue.
                             data_for_res = {k: v[0] for k, v in data_for_res.items() if v}
 
                         current_market_data_all_resolutions[res] = data_for_res
@@ -308,5 +305,8 @@ class BT_Engine:
         """
         Ensures the database connection is closed when the object is destroyed.
         """
-        self.con.close()
-        # print("Database connection closed.") # Optional: uncomment for debugging
+        # --- FIX: Safely close the connection ---
+        # Check if 'con' attribute exists before trying to close it. This prevents
+        # an AttributeError if the __init__ method failed before creating the connection.
+        if hasattr(self, 'con'):
+            self.con.close()

@@ -17,7 +17,6 @@ schedule = "^1.2.2" # For scheduling tasks
 # Streamlit and its ecosystem
 streamlit = "^1.49.1"
 streamlit-option-menu = "^0.4.0" # For the dashboard sidebar
-streamlit-autorefresh = "^1.0.1" # For the live monitor
 plotly = "^6.3.0" # For creating charts
 psutil = "^7.0.0" # For checking process status
 

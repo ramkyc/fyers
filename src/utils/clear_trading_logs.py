@@ -72,5 +72,15 @@ def clear_logs():
     # Clear tables in the live market data cache database
     clear_database_tables(config.LIVE_MARKET_DB_FILE, live_market_data_tables)
 
+    # --- Final Step: Clean up non-DB state files ---
+    pid_file = os.path.join(config.DATA_DIR, 'live_engine.pid')
+    if os.path.exists(pid_file):
+        try:
+            os.remove(pid_file)
+            print(f"\nRemoved stale PID file: '{os.path.basename(pid_file)}'.")
+        except OSError as e:
+            print(f"\nWarning: Could not remove PID file. Error: {e}")
+    print("\n--- Cleanup Complete ---")
+
 if __name__ == "__main__":
     clear_logs()

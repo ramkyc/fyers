@@ -40,7 +40,6 @@ def run_backtest_for_worker(args):
         engine = BT_Engine(
             start_datetime=start_dt,
             end_datetime=end_dt,
-            db_file=db_path,
             resolutions=resolutions,
         )
         # --- CORRECTED: Call the run method with its required arguments ---

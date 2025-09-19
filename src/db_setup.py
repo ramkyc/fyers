@@ -118,6 +118,15 @@ def setup_databases():
                 );
             """)
             print("  - Table 'live_incomplete_bars' is ready.")
+
+            # Table for caching the latest LTP for the UI
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS live_ltp_cache (
+                    symbol TEXT PRIMARY KEY,
+                    ltp REAL
+                );
+            """)
+            print("  - Table 'live_ltp_cache' is ready.")
     except Exception as e:
         print(f"ERROR setting up live market database: {e}")
 
@@ -163,18 +172,20 @@ def setup_databases():
             print("  - Table 'backtest_trades' is ready.")
 
             # Table for live position tracking
+            # The PRIMARY KEY is (symbol, timeframe) to ensure a position is unique
+            # across all trading sessions, enabling true positional trading.
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS live_positions (
-                    run_id TEXT,
-                    timestamp TIMESTAMP,
                     symbol TEXT,
                     timeframe TEXT,
+                    timestamp TIMESTAMP,
                     quantity INTEGER, avg_price REAL, ltp REAL, mtm REAL,
                     stop_loss REAL,
                     target1 REAL,
                     target2 REAL,
                     target3 REAL,
-                    PRIMARY KEY (run_id, symbol, timeframe)
+                    run_id TEXT,
+                    PRIMARY KEY (symbol, timeframe)
                 ) WITHOUT ROWID;
             """)
             print("  - Table 'live_positions' is ready.")
