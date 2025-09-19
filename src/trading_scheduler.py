@@ -12,7 +12,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from auth import get_access_token, get_fyers_model
+from auth import get_access_token, get_fyers_model # get_access_token is now the smart function
 from market_calendar import is_market_working_day
 from fetch_symbol_master import fetch_and_store_symbol_masters # Direct import
 from prepare_live_data import prepare_live_strategy_data # Direct import
@@ -176,10 +176,6 @@ class TradingScheduler:
         now = datetime.datetime.now()
         market_open_time = datetime.time(9, 14)
         market_close_time = datetime.time(15, 30)
-
-        if is_market_working_day(now.date()) and now.time() > market_close_time:
-            print(f"[{now.strftime('%H:%M:%S')}] Market is already closed. Exiting.")
-            return
 
         # The daily setup now runs inside start_trading_engine to ensure sequence.
         # We only schedule the start and stop of the engine itself.
